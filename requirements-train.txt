@@ -10,6 +10,9 @@ tqdm
 onnx
 onnxruntime
 onnxsim
+# publish exported ONNX to the Hugging Face Hub (src/push_to_hf.py)
+huggingface_hub
+python-dotenv          # loads HF_TOKEN from .env
 # VideoMAE backbone option. Pin to 4.46.x: transformers >=5 fails to load the
 # pretrained VideoMAE attention biases (q_bias/v_bias) cleanly.
 transformers==4.46.3

@@ -55,5 +55,9 @@ Thumbs.db
 # ---- Claude Code local (machine-specific) settings ----
 .claude/settings.local.json
 
+# ---- secrets / tokens (never commit) ----
+.env
+.env.*
+!.env.example
 # ---- Streamlit secrets (never commit) — keep .streamlit/config.toml ----
 .streamlit/secrets.toml
