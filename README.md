@@ -11,6 +11,23 @@ Prediction** dataset and exported **PyTorch → ONNX → TensorRT (Jetson Orin)*
   TensorRT build is the only remaining step).
 - **Model #2 — Rockchip RK3588** — planned (different architecture; see below).
 
+## 📦 Models (Hugging Face Hub)
+
+Pretrained ONNX weights are hosted on the Hub (each repo includes `model.onnx`, a
+`model.meta.json` inference sidecar, and a model card):
+
+| Model | Best for | 🤗 Hub |
+|---|---|---|
+| **VideoMAE-base + HNM** ⭐ | accuracy-first | [akhra92/dashcam-collision-jetson-videomae-hnm](https://huggingface.co/akhra92/dashcam-collision-jetson-videomae-hnm) |
+| **R(2+1)D-18** | lightweight / Orin Nano | [akhra92/dashcam-collision-jetson-r2plus1d18](https://huggingface.co/akhra92/dashcam-collision-jetson-r2plus1d18) |
+
+```python
+from huggingface_hub import hf_hub_download
+onnx = hf_hub_download(repo_id="akhra92/dashcam-collision-jetson-r2plus1d18", filename="model.onnx")
+```
+
+Publish a freshly exported model with `python -m src.push_to_hf --config <cfg> --repo-id <user>/<name>`.
+
 ## 🔴 Live demo
 
 [![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://YOUR-APP.streamlit.app)
