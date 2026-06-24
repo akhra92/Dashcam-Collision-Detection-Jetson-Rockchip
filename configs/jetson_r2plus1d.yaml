@@ -1,0 +1,93 @@
+# =====================================================================
+# Configuration for Model #1 — Jetson Orin (R(2+1)D-18 3D-CNN)
+# TEMPORAL accident detection: a causal 1s sliding window is classified
+# accident/normal; sliding it over a video yields a P(accident) curve and
+# a detected event time.
+# =====================================================================
+
+experiment_name: jetson_r2plus1d18
+
+# ---- paths ----
+paths:
+  dataset_root: dataset            # train/, test/, train.csv, test.csv
+  clips_dir: artifacts/clips       # pre-extracted per-video frame STRIPS (.npy)
+  output_dir: artifacts/runs       # checkpoints, logs, onnx, metrics
+
+# ---- strip extraction (one contiguous frame strip per video) ----
+strip:
+  target_fps: 16                   # strip is resampled to this fps
+  strip_seconds: 8.0               # length of the extracted strip
+  pre_event_seconds: 5.0           # for positives: event placed this far into strip
+  short_side: 128                  # resize short side, store square center crop
+  fallback_fps: 30.0
+
+# ---- model input = one causal window ----
+input:
+  num_frames: 16                   # 16 frames @ 16fps = 1.0s causal window
+  crop_size: 112                   # R(2+1)D-18 native resolution
+  mean: [0.43216, 0.394666, 0.37645]
+  std:  [0.22803, 0.22145, 0.216989]
+
+# ---- temporal window labeling (relative to time_of_event) ----
+window:
+  pos_pre: 1.0                     # positive if window end-time in [event-pos_pre,
+  pos_post: 0.5                    #   event+pos_post]
+  ignore_post: 2.5                 # (event+pos_post, event+ignore_post] -> ignored
+  stride: 3                        # candidate window stride (in strip frames); also
+                                   #   the eval/inference scan granularity (~0.19s)
+  neg_ratio: 3                     # train negatives per positive window
+  temporal_jitter: 1               # +/- frames jitter on window start (train aug)
+
+# ---- full-timeline hard negatives ----
+# Extra negative windows sampled across the WHOLE video (not just the event
+# strip), so the model learns the full diversity of normal driving and stops
+# false-alarming on long streams.
+negatives:
+  per_video: 16                    # negative 1s clips sampled per video
+  guard_seconds: 1.0               # exclude [event - pos_pre - guard,
+                                   #   event + ignore_post + guard] for positives
+
+# ---- model ----
+model:
+  arch: r2plus1d_18                # r2plus1d_18 | s3d | mc3_18 | r3d_18
+  pretrained: true                 # Kinetics-400 weights
+  dropout: 0.5
+  freeze_stem_epochs: 2
+
+# ---- training ----
+train:
+  seed: 42
+  val_fraction: 0.15
+  epochs: 15
+  batch_size: 16                   # ~4.5GB on RTX 4060 8GB with AMP
+  num_workers: 6
+  amp: true
+  optimizer: adamw
+  lr: 3.0e-4
+  backbone_lr_mult: 0.1
+  weight_decay: 0.05
+  warmup_epochs: 2
+  scheduler: cosine
+  label_smoothing: 0.05
+  grad_clip: 1.0
+  early_stop_patience: 8
+  monitor: val_ap                  # AP over val windows (incl. full-timeline hard
+                                   #   negatives) -> aligned with low false alarms
+
+# ---- augmentation (training only) ----
+aug:
+  hflip_prob: 0.5
+  color_jitter: 0.2
+  random_resized_crop_scale: [0.7, 1.0]
+
+# ---- detection / evaluation ----
+detect:
+  threshold: 0.5                   # tuned on val and written back
+  consec: 3                        # consecutive windows above thr required to fire
+  tolerance_s: 1.0                 # |detected - event| <= tolerance = correct
+
+# ---- export ----
+export:
+  opset: 17
+  dynamic_batch: true
+  simplify: true

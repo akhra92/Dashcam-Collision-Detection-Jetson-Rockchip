@@ -1,0 +1,15 @@
+# Training/export environment (RTX 4060 workstation, conda env `myenv`)
+# torch / torchvision are already installed (2.5.0 + cu124).
+numpy
+pandas
+opencv-python-headless
+scikit-learn
+timm
+pyyaml
+tqdm
+onnx
+onnxruntime
+onnxsim
+# VideoMAE backbone option. Pin to 4.46.x: transformers >=5 fails to load the
+# pretrained VideoMAE attention biases (q_bias/v_bias) cleanly.
+transformers==4.46.3

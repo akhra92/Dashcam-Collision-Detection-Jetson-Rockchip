@@ -1,0 +1,56 @@
+# ============================================================
+# Dashcam Accident Detection — .gitignore
+# Commit: source (src/), configs/, deploy/, docs (*.md), requirements.
+# Do NOT commit: datasets, extracted caches, model weights, ONNX/engines, logs.
+# ============================================================
+
+# ---- datasets & extracted clip caches (large, regenerable) ----
+dataset/
+artifacts/clips/
+artifacts/clips224/
+# all generated run outputs (checkpoints, onnx, metrics, logs)
+artifacts/
+
+# ---- model weights / exported / compiled models (too big for git) ----
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine          # TensorRT (Jetson)
+*.rknn            # Rockchip NPU
+*.trt
+*.plan
+*.npy
+*.npz
+calib.cache
+
+# ---- logs ----
+*.log
+logs/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- editor / OS ----
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Claude Code local (machine-specific) settings ----
+.claude/settings.local.json

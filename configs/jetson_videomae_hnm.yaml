@@ -1,0 +1,79 @@
+# =====================================================================
+# VideoMAE + Hard-Negative Mining (HNM) fine-tune.
+# Starts from the trained videomae_base weights and fine-tunes with the
+# mined hard negatives added to the negative pool, to lower the full-video
+# false-alarm floor. Reuses the 224px data dir (incl. hardneg_manifest.csv).
+# =====================================================================
+
+experiment_name: jetson_videomae_hnm
+
+paths:
+  dataset_root: dataset
+  clips_dir: artifacts/clips224          # same data; reads hardneg_manifest.csv here
+  output_dir: artifacts/runs
+
+strip:
+  target_fps: 16
+  strip_seconds: 8.0
+  pre_event_seconds: 5.0
+  short_side: 224
+  fallback_fps: 30.0
+
+input:
+  num_frames: 16
+  crop_size: 224
+  mean: [0.485, 0.456, 0.406]
+  std:  [0.229, 0.224, 0.225]
+
+window:
+  pos_pre: 1.0
+  pos_post: 0.5
+  ignore_post: 2.5
+  stride: 3
+  neg_ratio: 3
+  temporal_jitter: 1
+  hardneg_oversample: 3                   # emphasise mined hard negatives
+
+negatives:
+  per_video: 16
+  guard_seconds: 1.0
+
+model:
+  arch: videomae_base
+  pretrained: true
+  dropout: 0.5
+  freeze_stem_epochs: 0                   # backbone already trained; no freeze warmup
+
+train:
+  seed: 42
+  val_fraction: 0.15
+  epochs: 6
+  batch_size: 8
+  num_workers: 6
+  amp: true
+  optimizer: adamw
+  lr: 3.0e-5                              # low LR fine-tune
+  backbone_lr_mult: 0.1
+  weight_decay: 0.05
+  warmup_epochs: 1
+  scheduler: cosine
+  label_smoothing: 0.05
+  grad_clip: 1.0
+  early_stop_patience: 4
+  monitor: val_ap
+  init_from: artifacts/runs/jetson_videomae_base/best.pt   # fine-tune from this
+
+aug:
+  hflip_prob: 0.5
+  color_jitter: 0.2
+  random_resized_crop_scale: [0.7, 1.0]
+
+detect:
+  threshold: 0.5
+  consec: 3
+  tolerance_s: 1.0
+
+export:
+  opset: 17
+  dynamic_batch: true
+  simplify: true

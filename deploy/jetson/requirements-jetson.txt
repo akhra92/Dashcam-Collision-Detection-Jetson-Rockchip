@@ -1,0 +1,5 @@
+# On the Jetson, TensorRT + CUDA come from JetPack (do NOT pip install them).
+# Only extra runtime deps:
+pycuda
+numpy
+opencv-python
