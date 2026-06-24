@@ -1,0 +1,7 @@
+# Streamlit live-demo dependencies (CPU-only, torch-free) — used by Streamlit Cloud.
+# For TRAINING dependencies see requirements-train.txt.
+streamlit>=1.32
+onnxruntime>=1.17
+opencv-python-headless>=4.8
+numpy
+pandas
