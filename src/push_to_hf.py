@@ -5,8 +5,7 @@ device-agnostic hand-off artifact; hosting it on the Hub lets the Jetson /
 Rockchip targets pull a versioned model with `hf_hub_download` instead of
 shipping weights through git (our GitHub .gitignore excludes *.onnx on purpose).
 
-Auth (any one of): put `HF_TOKEN=hf_...` in a local `.env` (gitignored), export
-HF_TOKEN in the environment, run `huggingface-cli login` once, or pass --token.
+Auth: run `huggingface-cli login` once, or set HF_TOKEN in the environment.
 
 Examples
 --------
@@ -19,7 +18,6 @@ Examples
 from __future__ import annotations
 import argparse
 import json
-import os
 from pathlib import Path
 
 from src.config import load_config
@@ -92,17 +90,8 @@ def main():
     ap.add_argument("--filename", default="model.onnx", help="Path of the file in the repo.")
     ap.add_argument("--private", action="store_true", help="Create the repo as private.")
     ap.add_argument("--no-card", action="store_true", help="Skip generating/uploading README.md.")
-    ap.add_argument("--token", default=None,
-                    help="HF token. Defaults to HF_TOKEN from .env / environment, then login cache.")
+    ap.add_argument("--token", default=None, help="HF token (else uses login cache / HF_TOKEN).")
     args = ap.parse_args()
-
-    # Load HF_TOKEN (and friends) from a local .env if present. Never commit .env.
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass  # optional; CLI --token or a prior huggingface-cli login still work
-    token = args.token or os.getenv("HF_TOKEN")
 
     cfg = load_config(args.config) if args.config else None
 
@@ -123,7 +112,7 @@ def main():
     # Imported here so `--help` works without huggingface_hub installed.
     from huggingface_hub import HfApi
 
-    api = HfApi(token=token)
+    api = HfApi(token=args.token)
     api.create_repo(args.repo_id, repo_type="model", private=args.private, exist_ok=True)
     print(f"repo ready -> https://huggingface.co/{args.repo_id}")
 
