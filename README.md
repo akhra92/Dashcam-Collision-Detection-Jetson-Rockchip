@@ -41,7 +41,7 @@ onnx = hf_hub_download(repo_id="akhra92/dashcam-collision-jetson-r2plus1d18", fi
 
 ## 🔴 Live demo
 
-[Try Live Demo](https://YOUR-APP.streamlit.app)
+[Try Live Demo](https://dashcam-collision-detection-jetson-rockchip.streamlit.app/)
 
 Upload a dashcam clip — or click **“Try it with a sample accident clip”** — and watch
 the `P(accident)` curve and the detected collision time. The hosted demo runs the
