@@ -26,38 +26,19 @@ from huggingface_hub import hf_hub_download
 onnx = hf_hub_download(repo_id="akhra92/dashcam-collision-jetson-r2plus1d18", filename="model.onnx")
 ```
 
-Publish a freshly exported model with `python -m src.push_to_hf --config <cfg> --repo-id <user>/<name>`.
-
 ## 🔴 Live demo
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://YOUR-APP.streamlit.app)
+[Try Live Demo](https://YOUR-APP.streamlit.app)
 
 Upload a dashcam clip — or click **“Try it with a sample accident clip”** — and watch
 the `P(accident)` curve and the detected collision time. The hosted demo runs the
 **R(2+1)D** model via ONNXRuntime on CPU (torch-free).
-
-> The bundled sample (`sample_video/nexar_accident_demo.mp4`) is a short clip from the
-> **Nexar Collision Prediction** dataset (Kaggle), included only for demonstration —
-> check the dataset's terms before redistributing.
 
 **Run locally**
 ```bash
 pip install -r requirements.txt
 streamlit run app.py        # uses artifacts/runs/jetson_r2plus1d18/...onnx if present
 ```
-
-**Deploy to Streamlit Community Cloud** (free):
-1. Push this repo to GitHub.
-2. The model weights aren't in git — host `jetson_r2plus1d18.onnx` somewhere with a
-   **direct download URL** (e.g. a GitHub *Release* asset, or Hugging Face Hub).
-3. On [share.streamlit.io](https://share.streamlit.io): **New app** → pick this repo →
-   main file `app.py` → **Deploy**.
-4. In **Settings → Secrets**, add: `MODEL_URL = "https://…/jetson_r2plus1d18.onnx"`.
-5. Copy the resulting `*.streamlit.app` URL into the badge link above.
-
-> Deps: `requirements.txt` (app, CPU-only) + `packages.txt` (ffmpeg). CPU inference
-> is a few seconds per clip; raise the sidebar **scan stride** for a snappier demo.
-
 ---
 
 ## 1. The idea (mental model)
