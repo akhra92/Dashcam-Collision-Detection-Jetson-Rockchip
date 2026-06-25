@@ -11,6 +11,19 @@ Prediction** dataset and exported **PyTorch → ONNX → TensorRT (Jetson Orin)*
   TensorRT build is the only remaining step).
 - **Model #2 — Rockchip RK3588** — planned (different architecture; see below).
 
+## 🎬 See it in action
+
+![Dashcam collision detection demo](assets/demo.gif)
+
+A held-out Nexar dashcam clip (left) and the model's **live `P(accident)` score**
+(right) as a 1-second causal window slides across it. The score stays near zero
+through normal driving, then spikes the instant the collision unfolds (~19.1 s, the
+dotted *true event* line), crosses the `0.68` threshold and **fires a detection within
+~0.1 s** of the labelled time — with no false alarms beforehand. This is exactly the
+streaming computation the edge device runs on a live camera.
+
+> Reproduce: `python -m tools.demo_gif make --id 00168 --out assets/demo.gif`
+
 ## 📦 Models (Hugging Face Hub)
 
 Pretrained ONNX weights are hosted on the Hub (each repo includes `model.onnx`, a
