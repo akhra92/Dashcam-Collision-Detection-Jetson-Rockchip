@@ -1,0 +1,94 @@
+# =====================================================================
+# Configuration for Model #2 — Rockchip RK3588 (MobileNetV3 + temporal head)
+# The RK3588 NPU does NOT support 3D convolutions, so this model is a 2D-CNN
+# applied per frame + a small temporal head. Same TEMPORAL framing as Model #1
+# (causal 1s sliding window -> P(accident) curve -> event time), but every op
+# is NPU-friendly. The 2D backbone runs on the NPU (INT8); the head runs on CPU.
+#
+# Reuses the SAME 128px strips as jetson_r2plus1d (artifacts/clips) — no need to
+# re-run preprocess/extract_negatives.
+# =====================================================================
+
+experiment_name: rockchip_mnv3s
+
+# ---- paths (shared 128px data with Model #1) ----
+paths:
+  dataset_root: dataset
+  clips_dir: artifacts/clips         # same strips + neg_manifest.csv as r2plus1d
+  output_dir: artifacts/runs
+
+# ---- strip extraction (already done for r2plus1d; here for reference) ----
+strip:
+  target_fps: 16
+  strip_seconds: 8.0
+  pre_event_seconds: 5.0
+  short_side: 128
+  fallback_fps: 30.0
+
+# ---- model input = one causal window ----
+input:
+  num_frames: 16                     # 16 frames @ 16fps = 1.0s causal window
+  crop_size: 112                     # 2D backbone input; 112 keeps NPU cost low
+  mean: [0.485, 0.456, 0.406]        # ImageNet (2D backbones are ImageNet-pretrained)
+  std:  [0.229, 0.224, 0.225]
+
+# ---- temporal window labeling (identical to Model #1) ----
+window:
+  pos_pre: 1.0
+  pos_post: 0.5
+  ignore_post: 2.5
+  stride: 3
+  neg_ratio: 3
+  temporal_jitter: 1
+
+negatives:
+  per_video: 16
+  guard_seconds: 1.0
+
+# ---- model ----
+model:
+  arch: mnv3s_temporal               # mnv3s_temporal | mnv3l_temporal | resnet18_temporal
+  pretrained: true                   # ImageNet weights for the 2D backbone
+  dropout: 0.3
+  freeze_stem_epochs: 1              # warm up the head before unfreezing the backbone
+  temporal_head: tconv               # tconv | gru | tpool
+  feat_dim: 256                      # temporal-head width
+
+# ---- training ----
+train:
+  seed: 42
+  val_fraction: 0.15
+  epochs: 18
+  batch_size: 24                     # 16 frames x 24 = 384 imgs/step through a 2D CNN
+  num_workers: 6
+  amp: true
+  optimizer: adamw
+  lr: 6.0e-4                         # 2D backbone trains faster than the 3D nets
+  backbone_lr_mult: 0.1
+  weight_decay: 0.05
+  warmup_epochs: 2
+  scheduler: cosine
+  label_smoothing: 0.05
+  grad_clip: 1.0
+  early_stop_patience: 8
+  monitor: val_ap
+
+# ---- augmentation (training only) ----
+aug:
+  hflip_prob: 0.5
+  color_jitter: 0.2
+  random_resized_crop_scale: [0.7, 1.0]
+
+# ---- detection / evaluation ----
+detect:
+  threshold: 0.5
+  consec: 3
+  tolerance_s: 1.0
+
+# ---- export ----
+# Static shapes only — rknn-toolkit2 quantizes a fixed-shape graph. The backbone
+# is exported per-frame [1,3,112,112]; the temporal head exported separately.
+export:
+  opset: 12                          # rknn-toolkit2 is happiest with opset <= 12
+  dynamic_batch: false
+  simplify: true

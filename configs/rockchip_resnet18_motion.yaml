@@ -1,0 +1,82 @@
+# =====================================================================
+# Configuration for Model #2 (motion) — Rockchip RK3588
+# ResNet18 per-frame backbone + temporal head, fed RGB + temporal-difference
+# channels (input.motion: true -> 6-channel input). This gives the all-2D-conv
+# model the inter-frame motion that a collision is made of, which a per-frame
+# appearance model alone cannot see. Still NPU-friendly (no 3D convs).
+# Reuses the SAME 128px strips; the diff is computed on the fly.
+# =====================================================================
+
+experiment_name: rockchip_resnet18_motion
+
+paths:
+  dataset_root: dataset
+  clips_dir: artifacts/clips
+  output_dir: artifacts/runs
+
+strip:
+  target_fps: 16
+  strip_seconds: 8.0
+  pre_event_seconds: 5.0
+  short_side: 128
+  fallback_fps: 30.0
+
+input:
+  num_frames: 16
+  crop_size: 112
+  motion: true                       # <-- RGB + temporal-diff -> 6 input channels
+  mean: [0.485, 0.456, 0.406]        # ImageNet (applied to the RGB channels)
+  std:  [0.229, 0.224, 0.225]
+
+window:
+  pos_pre: 1.0
+  pos_post: 0.5
+  ignore_post: 2.5
+  stride: 3
+  neg_ratio: 3
+  temporal_jitter: 1
+
+negatives:
+  per_video: 16
+  guard_seconds: 1.0
+
+model:
+  arch: resnet18_temporal
+  pretrained: true
+  dropout: 0.3
+  freeze_stem_epochs: 0              # first conv is modified (6ch) -> train it from epoch 0
+  temporal_head: tconv
+  feat_dim: 256
+
+train:
+  seed: 42
+  val_fraction: 0.15
+  epochs: 20
+  batch_size: 24
+  num_workers: 6
+  amp: true
+  optimizer: adamw
+  lr: 4.0e-4
+  backbone_lr_mult: 0.1
+  weight_decay: 0.05
+  warmup_epochs: 2
+  scheduler: cosine
+  label_smoothing: 0.05
+  grad_clip: 1.0
+  early_stop_patience: 8
+  monitor: val_ap
+
+aug:
+  hflip_prob: 0.5
+  color_jitter: 0.2
+  random_resized_crop_scale: [0.7, 1.0]
+
+detect:
+  threshold: 0.5
+  consec: 3
+  tolerance_s: 1.0
+
+export:
+  opset: 12
+  dynamic_batch: false
+  simplify: true

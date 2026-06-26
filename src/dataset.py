@@ -15,6 +15,33 @@ from torch.utils.data import Dataset
 
 
 # ----------------------------------------------------------------------
+# Model input assembly (RGB, optionally + temporal-difference channels)
+# ----------------------------------------------------------------------
+# Motion mode feeds the per-frame 2D backbone explicit inter-frame motion (the
+# Rockchip models can't use 3D convs to learn it). Channels become 6: the
+# ImageNet-normalised RGB frame, plus its difference from the previous frame.
+MOTION_SCALE = 0.5                       # std-ish scale for the diff channels
+
+
+def motion_enabled(cfg) -> bool:
+    return bool(cfg.input.get("motion", False))
+
+
+def in_channels(cfg) -> int:
+    return 6 if motion_enabled(cfg) else 3
+
+
+def assemble_input(rgb01, mean, std, motion):
+    """[3,L,H,W] float 0-1 -> [3 or 6, L,H,W] normalised model input."""
+    norm = (rgb01 - mean) / std
+    if not motion:
+        return norm
+    diff = torch.zeros_like(rgb01)
+    diff[:, 1:] = (rgb01[:, 1:] - rgb01[:, :-1]) / MOTION_SCALE   # causal: diff[0]=0
+    return torch.cat([norm, diff], dim=0)
+
+
+# ----------------------------------------------------------------------
 # Window labeling
 # ----------------------------------------------------------------------
 def window_end_time(start_idx, L, s0, fps):
@@ -119,6 +146,7 @@ class WindowDataset(Dataset):
         self.crop = cfg.input.crop_size
         self.mean = torch.tensor(cfg.input.mean).view(3, 1, 1, 1)
         self.std = torch.tensor(cfg.input.std).view(3, 1, 1, 1)
+        self.motion = motion_enabled(cfg)
         self.rng = np.random.default_rng(cfg.train.seed + (0 if train else 1))
         self._cache = {}
 
@@ -173,7 +201,7 @@ class WindowDataset(Dataset):
         clip = self._spatial(clip)
         x = torch.from_numpy(clip).float().div_(255.0).permute(3, 0, 1, 2).contiguous()
         x = self._color_jitter(x)
-        x = (x - self.mean) / self.std
+        x = assemble_input(x, self.mean, self.std, self.motion)
         y = torch.tensor(float(row["label"]))
         return x, y, row["id"]
 
@@ -186,13 +214,15 @@ def strip_to_windows_tensor(meta_row, cfg):
     strip = np.load(meta_row["strip_path"], mmap_mode="r")
     N = strip.shape[0]
     s0 = float(meta_row["strip_start_time"]); fps = float(meta_row["target_fps"])
-    mean = np.array(cfg.input.mean); std = np.array(cfg.input.std)
+    mean = torch.tensor(cfg.input.mean).view(3, 1, 1, 1)
+    std = torch.tensor(cfg.input.std).view(3, 1, 1, 1)
+    motion = motion_enabled(cfg)
     S = strip.shape[1]; top = (S - c) // 2
     xs, ets = [], []
     for st in range(0, N - L + 1, int(cfg.window.stride)):
         clip = np.asarray(strip[st:st + L, top:top + c, top:top + c, :]).astype(np.float32) / 255.0
-        clip = (clip - mean) / std
-        xs.append(clip.transpose(3, 0, 1, 2))
+        rgb01 = torch.from_numpy(clip).permute(3, 0, 1, 2).contiguous()
+        xs.append(assemble_input(rgb01, mean, std, motion))
         ets.append(window_end_time(st, L, s0, fps))
-    x = torch.from_numpy(np.stack(xs)).float()
+    x = torch.stack(xs).float()
     return x, np.array(ets)

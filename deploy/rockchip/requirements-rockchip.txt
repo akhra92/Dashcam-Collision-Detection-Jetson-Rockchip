@@ -1,0 +1,19 @@
+# Rockchip RK3588 deployment deps. Two different environments:
+#
+# 1) x86 Linux HOST — convert ONNX -> RKNN (convert_rknn.py):
+#      rknn-toolkit2   # install from Rockchip's official wheel/repo, not PyPI
+#      numpy
+#      opencv-python
+#
+# 2) RK3588 BOARD — streaming inference (infer_rknn.py):
+#      rknn-toolkit-lite2   # ships in Rockchip's repo for the board
+#      onnxruntime          # runs the tiny temporal head on the CPU
+#      numpy
+#      opencv-python
+#
+# rknn-toolkit2 / rknn-toolkit-lite2 are NOT on PyPI — get them from
+# https://github.com/airockchip/rknn-toolkit2 (match the version to your
+# board's NPU driver / librknnrt.so).
+numpy
+opencv-python
+onnxruntime

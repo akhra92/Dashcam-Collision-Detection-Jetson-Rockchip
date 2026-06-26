@@ -9,7 +9,8 @@ Prediction** dataset and exported **PyTorch → ONNX → TensorRT (Jetson Orin)*
 
 - **Model #1 — NVIDIA Jetson Orin** — ✅ trained, evaluated, ONNX-exported (on-device
   TensorRT build is the only remaining step).
-- **Model #2 — Rockchip RK3588** — planned (different architecture; see below).
+- **Model #2 — Rockchip RK3588** — ✅ built & trained (2D-CNN + temporal head; split
+  static-shape ONNX export ready). On-device INT8 RKNN benchmark is the remaining step.
 
 ## 🎬 See it in action
 
@@ -41,7 +42,7 @@ onnx = hf_hub_download(repo_id="akhra92/dashcam-collision-jetson-r2plus1d18", fi
 
 ## 🔴 Live demo
 
-[Try Live Demo](https://dashcam-collision-detection-jetson-rockchip.streamlit.app/)
+![Try Live Demo](https://dashcam-collision-detection-jetson-rockchip.streamlit.app/)
 
 Upload a dashcam clip — or click **“Try it with a sample accident clip”** — and watch
 the `P(accident)` curve and the detected collision time. The hosted demo runs the
@@ -84,7 +85,9 @@ A detection is **correct** if it fires within **±1.0 s** of `time_of_event`.
 
 Held-out **225-video** validation split (112 accident / 113 normal), scored by
 streaming over the **full ~40 s videos** (`src/eval_fullvideo.py`) — the realistic
-deployment condition. Two backbones, identical data/pipeline.
+deployment condition. Identical data/pipeline across models.
+
+**Model #1 — Jetson Orin** (3D-CNN / ViT over the window):
 
 | Model | Detection @ low-FAR | False-alarm floor | Loc. error | Size |
 |---|---|---|---|---|
@@ -92,11 +95,27 @@ deployment condition. Two backbones, identical data/pipeline.
 | R(2+1)D-18 — lightweight | 63.4 % @ 14.2 % | ~8 % | 0.31 s | 33 M CNN @112 |
 | VideoMAE-base (no HNM) | — (floor 24 %) | 23.9 % | 0.42 s | 86 M ViT @224 |
 
+**Model #2 — Rockchip RK3588** (2D-CNN per frame + temporal head; no 3D convs):
+
+| Model | Detection @ low-FAR | Loc. error | Size |
+|---|---|---|---|
+| **resnet18 + motion** ⭐ best on NPU | **30 %** @ 13 % (or 26 % @ 8 %) | 0.38 s | 12 M 2D-CNN @112 |
+| resnet18_temporal (RGB only) | 18 % @ 12 % | 0.34 s | 12 M |
+| mnv3s_temporal (RGB only) | 22 % @ 14 % | 0.36 s | 1.6 M |
+
+The RK3588 models trail the 3D models (~30 % vs ~63 % detection): a per-frame 2D CNN
+sees *appearance* but not the *motion* a collision is made of. Feeding explicit
+**temporal-difference channels** (`input.motion`) roughly doubled detection over the
+RGB-only 2D model — motion modelling, not backbone size, is the bottleneck. This is
+the accuracy cost of dropping 3D convs to fit the NPU.
+
 **Recommendation**
-- **Accuracy-first:** `videomae_base + HNM` — most accurate at every false-alarm
-  level. Caveat: heavy ViT; **verify per-window latency on the actual Orin** before
-  committing.
-- **Lightweight / Orin Nano:** `r2plus1d_18` — far faster, ~5 pts lower detection.
+- **Accuracy-first (Jetson):** `videomae_base + HNM` — most accurate at every
+  false-alarm level. Caveat: heavy ViT; **verify per-window latency on the actual
+  Orin** before committing.
+- **Lightweight (Jetson Orin Nano):** `r2plus1d_18` — far faster, ~5 pts lower detection.
+- **Rockchip RK3588:** `resnet18 + motion` — best NPU-deployable accuracy; `mnv3s` if
+  NPU latency is tight (13× fewer params, ~8 pts lower detection).
 
 **Key engineering lessons (baked into the configs)**
 1. **Full-timeline hard negatives** (sampling normal windows across the *whole* video,
@@ -119,7 +138,7 @@ ONNX `.meta.json`; raise it to trade detection for fewer false alarms.
 
 ## 3. Architecture
 
-Two backbone families behind one interface (`src/model.py`), both output a single
+Three backbone families behind one interface (`src/model.py`), all output a single
 logit per window:
 
 | `model.arch` | Type | Input | Params | Notes |
@@ -128,6 +147,12 @@ logit per window:
 | `s3d`, `mc3_18`, `r3d_18` | 3D-CNN | 16×112–224 | 8–33 M | lighter/alt CNNs |
 | `videomae_base` | ViT (VideoMAE) | 16×224×224 | 86 M | self-supervised; highest accuracy; needs `transformers==4.46.3` |
 | `videomae_large`, `videomaev2_base` | ViT | 16×224×224 | 300/86 M | heavier / VideoMAE-v2 |
+| `mnv3s_temporal` (Rockchip) | 2D-CNN/frame + temporal head | 16×112×112 | ~1.6 M | **no 3D convs** → RK3588 NPU; head = `tconv`/`gru`/`tpool` |
+| `mnv3l_temporal`, `resnet18_temporal` | 2D-CNN/frame + temporal head | 16×112×112 | 4–12 M | larger 2D backbones |
+
+The 2D-CNN family takes an optional `input.motion: true`, which feeds the backbone
+6 channels — RGB **plus** the per-frame temporal difference — so it perceives motion
+without 3D convs (the single biggest accuracy lever for the RK3588 model).
 
 Common training: transfer learning, dropout + single logit, `BCEWithLogitsLoss` with
 `pos_weight`, discriminative LR, backbone-freeze warmup, cosine LR + warmup, AMP,
@@ -241,31 +266,63 @@ python3 deploy/jetson/infer_trt.py --engine model_fp16.engine \
 same clips — they should agree within FP16 tolerance and fire at the same time — and
 confirm per-window latency meets your streaming budget.
 
-### Rockchip RK3588 (RKNN) — planned, Model #2
-RKNN's NPU doesn't support 3D convolutions, so this is a **different model**: a
-**2D-CNN per frame** (MobileNetV3 / RepVGG / ResNet18) + a lightweight **temporal
-head** (temporal pool / 1D-conv / small GRU). Same detection framing → comparable
-metrics. Path: train (reuses the extracted strips) → export ONNX with **static
-shapes** → `rknn-toolkit2` on an x86 host (INT8 + calibration) → deploy `.rknn` on the
-RK3588 via `rknn-toolkit-lite2` → benchmark NPU latency.
+### Rockchip RK3588 (RKNN) — Model #2
+The RK3588 NPU doesn't support 3D convolutions, so this is a **different model**: a
+**2D-CNN per frame** (MobileNetV3 / ResNet18, `src/model.py`) + a lightweight
+**temporal head** (1D-conv / GRU / pool). The best variant also feeds **temporal-
+difference channels** (`input.motion`) so the 2D backbone sees motion. Same temporal
+framing and training pipeline (it **reuses the 128 px strips** — no re-preprocessing).
+
+It **deploys as two graphs**: the per-frame 2D backbone runs on the NPU (INT8); the
+tiny temporal head runs on the device CPU. This keeps every NPU tensor 4D.
+
+```bash
+# 1. Train (reuses artifacts/clips from Model #1). Recommended = resnet18 + motion.
+python -m src.train --config configs/rockchip_resnet18_motion.yaml
+python -m src.eval_fullvideo --config configs/rockchip_resnet18_motion.yaml
+
+# 2. Export the split, static-shape ONNX graphs (parity-checked vs PyTorch)
+python -m src.export_rockchip --config configs/rockchip_resnet18_motion.yaml
+#    -> backbone.onnx [1,6,112,112]->[1,C] + temporal_head.onnx [1,T,C]->[1] + meta
+#    (3 input channels for the RGB-only configs; 6 with input.motion)
+
+# 3. On an x86 host: quantize the backbone to INT8 RKNN (rknn-toolkit2)
+python deploy/rockchip/convert_rknn.py --backbone backbone.onnx \
+    --meta rockchip.meta.json --strips artifacts/clips/train --out backbone.rknn
+
+# 4. On the RK3588: stream (NPU backbone + CPU head) + benchmark
+python3 deploy/rockchip/infer_rknn.py --backbone backbone.rknn \
+    --head temporal_head.onnx --meta rockchip.meta.json --video clip.mp4
+```
+**Sign-off:** same as Jetson — compare the RKNN prob curve to the PyTorch
+(`detect_video`) curve on the same clips and confirm NPU per-frame latency.
 
 ---
 
 ## 8. Repository layout
 ```
-configs/        one YAML per model (r2plus1d, videomae, videomae_hnm)
-src/            config, preprocess, extract_negatives, dataset, model, train,
-                evaluate, eval_fullvideo, detect_video, mine_hard_negatives, export_onnx
-deploy/jetson/  build_engine.sh, infer_trt.py (streaming), int8_calibrator.py
-dataset/        Nexar data (gitignored)
-artifacts/      clips/ & clips224/ (caches), runs/ (ckpts, onnx, metrics) — gitignored
+configs/         one YAML per model (r2plus1d, videomae[_hnm], rockchip_{mobilenet,resnet18[_motion]})
+src/             config, preprocess, extract_negatives, dataset, model, train, evaluate,
+                 eval_fullvideo, detect_video, mine_hard_negatives, export_onnx, export_rockchip
+deploy/jetson/   build_engine.sh, infer_trt.py (streaming), int8_calibrator.py
+deploy/rockchip/ convert_rknn.py (x86 INT8), infer_rknn.py (NPU+CPU streaming)
+tools/           demo_gif.py (README demo)
+dataset/         Nexar data (gitignored)
+artifacts/       clips/ & clips224/ (caches), runs/ (ckpts, onnx, metrics) — gitignored
 ```
 
 ## 9. Status & further work
 - **Done:** data pipeline, three trained models (R(2+1)D, VideoMAE, VideoMAE+HNM),
   full-video evaluation, ONNX export with verified parity, Jetson deploy scripts.
+- **Done (Model #2):** Rockchip 2D-CNN + temporal-head models (mnv3s / resnet18 /
+  **resnet18 + motion**, the best), trained + full-video evaluated; split static-shape
+  ONNX export (parity-checked) + rknn-toolkit2 INT8 conversion + on-device streaming.
 - **Remaining (Model #1):** build/benchmark the TensorRT engine on the physical Orin.
-- **Next (Model #2):** the Rockchip 2D-CNN + temporal-head model.
-- **Accuracy headroom:** localization is already tight (~0.3 s); the gap is recall
-  (~35 % of accidents missed within ±1 s). Candidates: larger backbone / higher res,
-  32-frame window, curve smoothing, more hard-negative mining, focal loss, TTA.
+- **Remaining (Model #2):** run the INT8 RKNN conversion + latency benchmark on a
+  physical RK3588 board.
+- **Accuracy headroom (Jetson):** localization is tight (~0.3 s); the gap is recall
+  (~35 % missed within ±1 s). Candidates: larger backbone / higher res, 32-frame
+  window, curve smoothing, more hard-negative mining, focal loss, TTA.
+- **Accuracy headroom (Rockchip):** ~30 % detection vs ~63 % for the 3D models —
+  motion via frame-diff helps but is coarse. Candidates: optical-flow/two-stream input,
+  more frames, or a small NPU-friendly (2+1)D-style temporal block.

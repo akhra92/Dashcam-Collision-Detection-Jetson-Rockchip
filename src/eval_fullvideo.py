@@ -21,6 +21,8 @@ from src.detect_video import preprocess_frame
 
 @torch.no_grad()
 def stream_video(model, path, cfg, device, mean, std):
+    from src.dataset import assemble_input, motion_enabled
+    motion = motion_enabled(cfg)
     L, S = cfg.input.num_frames, cfg.input.crop_size
     tgt_fps, stride = cfg.strip.target_fps, cfg.window.stride
     cap = cv2.VideoCapture(str(path))
@@ -37,8 +39,9 @@ def stream_video(model, path, cfg, device, mean, std):
             buf.append(preprocess_frame(fr, S))
             scount += 1
             if len(buf) == L and scount % stride == 0:
-                clip = torch.from_numpy(np.stack(buf)).float().div_(255.0)
-                x = ((clip.permute(3, 0, 1, 2).contiguous() - mean) / std).unsqueeze(0).to(device)
+                rgb01 = torch.from_numpy(np.stack(buf)).float().div_(255.0) \
+                    .permute(3, 0, 1, 2).contiguous()
+                x = assemble_input(rgb01, mean, std, motion).unsqueeze(0).to(device)
                 with torch.autocast("cuda", enabled=device == "cuda"):
                     probs.append(torch.sigmoid(model(x)).item())
                 times.append(fcount / src_fps)
