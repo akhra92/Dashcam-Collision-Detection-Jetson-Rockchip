@@ -97,25 +97,28 @@ deployment condition. Identical data/pipeline across models.
 
 **Model #2 — Rockchip RK3588** (2D-CNN per frame + temporal head; no 3D convs):
 
-| Model | Detection @ low-FAR | Loc. error | Size |
+| Model | Detection @ low-FAR | Loc. error | Input |
 |---|---|---|---|
-| **resnet18 + motion** ⭐ best on NPU | **30 %** @ 13 % (or 26 % @ 8 %) | 0.38 s | 12 M 2D-CNN @112 |
-| resnet18_temporal (RGB only) | 18 % @ 12 % | 0.34 s | 12 M |
-| mnv3s_temporal (RGB only) | 22 % @ 14 % | 0.36 s | 1.6 M |
+| **resnet18 + motion ×3** ⭐ best on NPU | **35.7 %** @ 11.5 % (or 38 % @ 20 %) | **0.30 s** | RGB + diffs @ lags 1,2,4 (12 ch) |
+| resnet18 + motion (1 lag) | 30 % @ 13 % | 0.38 s | RGB + diff (6 ch) |
+| resnet18_temporal (RGB only) | 18 % @ 12 % | 0.34 s | RGB (3 ch) |
+| mnv3s_temporal (RGB only) | 22 % @ 14 % | 0.36 s | RGB (3 ch) |
 
-The RK3588 models trail the 3D models (~30 % vs ~63 % detection): a per-frame 2D CNN
+The RK3588 models trail the 3D models (~36 % vs ~63 % detection): a per-frame 2D CNN
 sees *appearance* but not the *motion* a collision is made of. Feeding explicit
-**temporal-difference channels** (`input.motion`) roughly doubled detection over the
-RGB-only 2D model — motion modelling, not backbone size, is the bottleneck. This is
-the accuracy cost of dropping 3D convs to fit the NPU.
+**temporal-difference channels** (`input.motion` / `motion_lags`) was the decisive
+lever — multi-scale frame differences (lags 1,2,4) **doubled** detection over the
+RGB-only 2D model (18 % → 36 %) and lifted window AP 0.39 → 0.50. Motion modelling,
+not backbone size, is the bottleneck. The residual gap is the accuracy cost of
+dropping 3D convs to fit the NPU.
 
 **Recommendation**
 - **Accuracy-first (Jetson):** `videomae_base + HNM` — most accurate at every
   false-alarm level. Caveat: heavy ViT; **verify per-window latency on the actual
   Orin** before committing.
 - **Lightweight (Jetson Orin Nano):** `r2plus1d_18` — far faster, ~5 pts lower detection.
-- **Rockchip RK3588:** `resnet18 + motion` — best NPU-deployable accuracy; `mnv3s` if
-  NPU latency is tight (13× fewer params, ~8 pts lower detection).
+- **Rockchip RK3588:** `resnet18 + motion ×3` (lags 1,2,4) — best NPU-deployable
+  accuracy; `mnv3s` if NPU latency is tight (13× fewer params, lower detection).
 
 **Key engineering lessons (baked into the configs)**
 1. **Full-timeline hard negatives** (sampling normal windows across the *whole* video,
@@ -150,9 +153,11 @@ logit per window:
 | `mnv3s_temporal` (Rockchip) | 2D-CNN/frame + temporal head | 16×112×112 | ~1.6 M | **no 3D convs** → RK3588 NPU; head = `tconv`/`gru`/`tpool` |
 | `mnv3l_temporal`, `resnet18_temporal` | 2D-CNN/frame + temporal head | 16×112×112 | 4–12 M | larger 2D backbones |
 
-The 2D-CNN family takes an optional `input.motion: true`, which feeds the backbone
-6 channels — RGB **plus** the per-frame temporal difference — so it perceives motion
-without 3D convs (the single biggest accuracy lever for the RK3588 model).
+The 2D-CNN family takes an optional `input.motion: true` with `motion_lags: [1,2,4]`,
+feeding the backbone RGB **plus** temporal differences at each lag (3 + 3·n_lags
+channels) so it perceives multi-scale motion without 3D convs — the single biggest
+accuracy lever for the RK3588 model. Each diff references the current frame, so the
+backbone stays per-frame (one independent NPU call per frame).
 
 Common training: transfer learning, dropout + single logit, `BCEWithLogitsLoss` with
 `pos_weight`, discriminative LR, backbone-freeze warmup, cosine LR + warmup, AMP,
@@ -277,14 +282,14 @@ It **deploys as two graphs**: the per-frame 2D backbone runs on the NPU (INT8); 
 tiny temporal head runs on the device CPU. This keeps every NPU tensor 4D.
 
 ```bash
-# 1. Train (reuses artifacts/clips from Model #1). Recommended = resnet18 + motion.
-python -m src.train --config configs/rockchip_resnet18_motion.yaml
-python -m src.eval_fullvideo --config configs/rockchip_resnet18_motion.yaml
+# 1. Train (reuses artifacts/clips). Recommended = resnet18 + multi-scale motion.
+python -m src.train --config configs/rockchip_resnet18_motion3.yaml
+python -m src.eval_fullvideo --config configs/rockchip_resnet18_motion3.yaml
 
 # 2. Export the split, static-shape ONNX graphs (parity-checked vs PyTorch)
-python -m src.export_rockchip --config configs/rockchip_resnet18_motion.yaml
-#    -> backbone.onnx [1,6,112,112]->[1,C] + temporal_head.onnx [1,T,C]->[1] + meta
-#    (3 input channels for the RGB-only configs; 6 with input.motion)
+python -m src.export_rockchip --config configs/rockchip_resnet18_motion3.yaml
+#    -> backbone.onnx [1,12,112,112]->[1,C] + temporal_head.onnx [1,T,C]->[1] + meta
+#    (channels = 3 + 3*len(motion_lags); 3 for RGB-only configs)
 
 # 3. On an x86 host: quantize the backbone to INT8 RKNN (rknn-toolkit2)
 python deploy/rockchip/convert_rknn.py --backbone backbone.onnx \
@@ -315,14 +320,16 @@ artifacts/       clips/ & clips224/ (caches), runs/ (ckpts, onnx, metrics) — g
 - **Done:** data pipeline, three trained models (R(2+1)D, VideoMAE, VideoMAE+HNM),
   full-video evaluation, ONNX export with verified parity, Jetson deploy scripts.
 - **Done (Model #2):** Rockchip 2D-CNN + temporal-head models (mnv3s / resnet18 /
-  **resnet18 + motion**, the best), trained + full-video evaluated; split static-shape
-  ONNX export (parity-checked) + rknn-toolkit2 INT8 conversion + on-device streaming.
+  +motion / **+motion ×3 lags**, the best at ~36 % det), trained + full-video
+  evaluated; split static-shape ONNX export (parity-checked) + rknn-toolkit2 INT8
+  conversion + on-device streaming.
 - **Remaining (Model #1):** build/benchmark the TensorRT engine on the physical Orin.
 - **Remaining (Model #2):** run the INT8 RKNN conversion + latency benchmark on a
   physical RK3588 board.
 - **Accuracy headroom (Jetson):** localization is tight (~0.3 s); the gap is recall
   (~35 % missed within ±1 s). Candidates: larger backbone / higher res, 32-frame
   window, curve smoothing, more hard-negative mining, focal loss, TTA.
-- **Accuracy headroom (Rockchip):** ~30 % detection vs ~63 % for the 3D models —
-  motion via frame-diff helps but is coarse. Candidates: optical-flow/two-stream input,
-  more frames, or a small NPU-friendly (2+1)D-style temporal block.
+- **Accuracy headroom (Rockchip):** ~36 % detection vs ~63 % for the 3D models —
+  multi-scale frame-diff motion closed much of the gap but is still coarser than 3D
+  convs. Candidates: optical-flow/two-stream input, more frames, or a small
+  NPU-friendly (2+1)D-style temporal block.
