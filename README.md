@@ -27,17 +27,22 @@ streaming computation the edge device runs on a live camera.
 
 ## 📦 Models (Hugging Face Hub)
 
-Pretrained ONNX weights are hosted on the Hub (each repo includes `model.onnx`, a
-`model.meta.json` inference sidecar, and a model card):
+Pretrained ONNX weights are hosted on the Hub (each repo includes the ONNX graph(s),
+an inference-config sidecar, and a model card):
 
-| Model | Best for | 🤗 Hub |
+| Model | Target / best for | 🤗 Hub |
 |---|---|---|
-| **VideoMAE-base + HNM** ⭐ | accuracy-first | [akhra92/dashcam-collision-jetson-videomae-hnm](https://huggingface.co/akhra92/dashcam-collision-jetson-videomae-hnm) |
-| **R(2+1)D-18** | lightweight / Orin Nano | [akhra92/dashcam-collision-jetson-r2plus1d18](https://huggingface.co/akhra92/dashcam-collision-jetson-r2plus1d18) |
+| **VideoMAE-base + HNM** ⭐ | Jetson — accuracy-first | [akhra92/dashcam-collision-jetson-videomae-hnm](https://huggingface.co/akhra92/dashcam-collision-jetson-videomae-hnm) |
+| **R(2+1)D-18** | Jetson — lightweight / Orin Nano | [akhra92/dashcam-collision-jetson-r2plus1d18](https://huggingface.co/akhra92/dashcam-collision-jetson-r2plus1d18) |
+| **ResNet18 + motion ×3** ⭐ | Rockchip RK3588 — best on NPU | [akhra92/dashcam-collision-rockchip-resnet18-motion](https://huggingface.co/akhra92/dashcam-collision-rockchip-resnet18-motion) |
+| **MobileNetV3-small** | Rockchip RK3588 — lightest | [akhra92/dashcam-collision-rockchip-mnv3s](https://huggingface.co/akhra92/dashcam-collision-rockchip-mnv3s) |
 
 ```python
 from huggingface_hub import hf_hub_download
-onnx = hf_hub_download(repo_id="akhra92/dashcam-collision-jetson-r2plus1d18", filename="model.onnx")
+# Jetson: a single graph
+onnx = hf_hub_download("akhra92/dashcam-collision-jetson-r2plus1d18", "model.onnx")
+# Rockchip: split graphs (NPU backbone + CPU head) — see the repo's model card
+bb = hf_hub_download("akhra92/dashcam-collision-rockchip-resnet18-motion", "backbone.onnx")
 ```
 
 ## 🔴 Live demo

@@ -81,6 +81,92 @@ On-device, the ONNX graph is compiled to a TensorRT engine (Jetson) or an
 """
 
 
+def build_rockchip_card(repo_id: str, meta: dict) -> str:
+    """Model card for the Rockchip split export (backbone + temporal head)."""
+    arch = meta.get("arch", "unknown")
+    fs = meta.get("frame_shape", [1, 3, 112, 112])
+    C = meta.get("feat_dim", "?")
+    T = meta.get("window_frames", "?")
+    lags = meta.get("motion_lags", [])
+    thr = meta.get("detect_threshold", "?")
+    consec = meta.get("consec", "?")
+    motion = "RGB + temporal diffs at lags %s" % lags if lags else "RGB only"
+    return f"""---
+library_name: onnx
+pipeline_tag: video-classification
+tags:
+  - onnx
+  - video-classification
+  - accident-detection
+  - dashcam
+  - rockchip
+  - rk3588
+license: mit
+---
+
+# Dashcam Collision Detector — Rockchip RK3588 (`{arch}`)
+
+Causal sliding-window crash detector for the **RK3588 NPU**. Because the NPU has no
+3D convolutions, this is a per-frame 2D-CNN + a small temporal head, deployed as
+**two ONNX graphs** (convert the backbone to INT8 RKNN; run the head on the CPU):
+
+| file | shape | runs on |
+|---|---|---|
+| `backbone.onnx` | `{fs}` → `[1, {C}]` | NPU (INT8 RKNN) |
+| `temporal_head.onnx` | `[1, {T}, {C}]` → `[1]` | CPU |
+| `rockchip.meta.json` | — | inference config |
+
+- **Input:** {motion} ({fs[1]} channels), {T}-frame window
+- **Decision rule:** threshold `{thr}`, `{consec}` consecutive windows
+
+## Usage
+
+```python
+from huggingface_hub import hf_hub_download
+import onnxruntime as ort, numpy as np, json
+
+repo = "{repo_id}"
+bb   = ort.InferenceSession(hf_hub_download(repo, "backbone.onnx"))
+head = ort.InferenceSession(hf_hub_download(repo, "temporal_head.onnx"))
+meta = json.load(open(hf_hub_download(repo, "rockchip.meta.json")))
+
+T, C = meta["window_frames"], meta["feat_dim"]
+feats = np.zeros((1, T, C), np.float32)               # fill from per-frame backbone
+frame = np.random.randn(*meta["frame_shape"]).astype("float32")
+feats[0, -1] = bb.run(["feat"], {{"frame": frame}})[0][0]
+logit = head.run(["logit"], {{"feats": feats}})[0]
+```
+
+See `deploy/rockchip/` (convert_rknn.py, infer_rknn.py) in the source repo for the
+INT8 conversion and streaming inference.
+"""
+
+
+def push_rockchip(args, cfg):
+    out_dir = Path(cfg.paths.output_dir) / cfg.experiment_name
+    files = ["backbone.onnx", "temporal_head.onnx", "rockchip.meta.json"]
+    missing = [f for f in files if not (out_dir / f).is_file()]
+    if missing:
+        raise FileNotFoundError(f"missing {missing} in {out_dir} "
+                                f"(run src.export_rockchip first)")
+    meta = json.loads((out_dir / "rockchip.meta.json").read_text())
+
+    from huggingface_hub import HfApi
+    api = HfApi(token=args.token)
+    api.create_repo(args.repo_id, repo_type="model", private=args.private, exist_ok=True)
+    print(f"repo ready -> https://huggingface.co/{args.repo_id}")
+
+    for f in files:
+        api.upload_file(path_or_fileobj=str(out_dir / f), path_in_repo=f,
+                        repo_id=args.repo_id, repo_type="model")
+        print(f"uploaded {f}")
+    if not args.no_card:
+        api.upload_file(path_or_fileobj=build_rockchip_card(args.repo_id, meta).encode(),
+                        path_in_repo="README.md", repo_id=args.repo_id, repo_type="model")
+        print("uploaded README.md (model card)")
+    print(f"done -> https://huggingface.co/{args.repo_id}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default=None,
@@ -90,10 +176,18 @@ def main():
     ap.add_argument("--filename", default="model.onnx", help="Path of the file in the repo.")
     ap.add_argument("--private", action="store_true", help="Create the repo as private.")
     ap.add_argument("--no-card", action="store_true", help="Skip generating/uploading README.md.")
+    ap.add_argument("--rockchip", action="store_true",
+                    help="Upload the Rockchip split export (backbone + temporal head + meta).")
     ap.add_argument("--token", default=None, help="HF token (else uses login cache / HF_TOKEN).")
     args = ap.parse_args()
 
     cfg = load_config(args.config) if args.config else None
+
+    if args.rockchip:
+        if cfg is None:
+            ap.error("--rockchip needs --config")
+        push_rockchip(args, cfg)
+        return
 
     # ---- resolve the ONNX path the same way export_onnx.py writes it ----
     if args.onnx:
