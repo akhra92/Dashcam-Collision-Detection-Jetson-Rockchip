@@ -64,7 +64,8 @@ def build_calibration(strips_dir, out_dir, S, n_imgs, meta, seed=0):
                     prev = _crop(np.asarray(arr[j - k]), S).astype(np.float32).transpose(2, 0, 1) / 255.0
                     chans.append((cur - prev) / scale)
                 p = os.path.abspath(os.path.join(out_dir, f"calib_{written:05d}.npy"))
-                np.save(p, np.concatenate(chans, 0).astype(np.float32))
+                # save as [1,C,S,S] so rknn doesn't warn about missing batch dim
+                np.save(p, np.concatenate(chans, 0)[None].astype(np.float32))
             f.write(p + "\n")
             written += 1
     kind = f"{3 + 3 * len(lags)}ch npy (lags={lags})" if lags else "RGB png"

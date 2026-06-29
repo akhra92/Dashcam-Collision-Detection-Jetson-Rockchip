@@ -1,9 +1,14 @@
 # Rockchip RK3588 deployment deps. Two different environments:
 #
 # 1) x86 Linux HOST — convert ONNX -> RKNN (convert_rknn.py):
-#      rknn-toolkit2   # install from Rockchip's official wheel/repo, not PyPI
-#      numpy
-#      opencv-python
+#      Use a DEDICATED env (rknn-toolkit2 pins old deps that clash with a modern
+#      training env: it needs numpy<=1.26.4, torch<=2.4.0, protobuf<=4.25.4).
+#        conda create -n rknn python=3.11 -y && conda activate rknn
+#        pip install "numpy<=1.26.4" "protobuf<=4.25.4" "torch==2.4.0" \
+#            ruamel.yaml scipy tqdm opencv-python fast-histogram onnxruntime
+#        pip install "onnx==1.16.1"     # NEWER onnx removes onnx.mapping -> rknn load_onnx fails
+#        pip install "setuptools<81"    # setuptools>=81 removes pkg_resources -> rknn import fails
+#        pip install rknn_toolkit2-*-cp311-*x86_64.whl   # cp311 = match the env's Python
 #
 # 2) RK3588 BOARD — streaming inference (infer_rknn.py):
 #      rknn-toolkit-lite2   # ships in Rockchip's repo for the board
