@@ -18,8 +18,10 @@ from torch.utils.data import Dataset
 # Model input assembly (RGB, optionally + temporal-difference channels)
 # ----------------------------------------------------------------------
 # Motion mode feeds the per-frame 2D backbone explicit inter-frame motion (the
-# Rockchip models can't use 3D convs to learn it). Channels become 6: the
-# ImageNet-normalised RGB frame, plus its difference from the previous frame.
+# Rockchip models can't use 3D convs to learn it). Each lag k adds 3 channels:
+# (RGB_t - RGB_{t-k}), all referencing the current frame so each frame stays
+# independently computable (deploy splits per-frame onto the NPU). With lags
+# [1,2,4] the input is 3 (RGB) + 3*3 = 12 channels of multi-scale motion.
 MOTION_SCALE = 0.5                       # std-ish scale for the diff channels
 
 
@@ -27,18 +29,28 @@ def motion_enabled(cfg) -> bool:
     return bool(cfg.input.get("motion", False))
 
 
+def motion_lags(cfg) -> list[int]:
+    """Temporal-difference lags (frames). [] when motion is off; default [1]."""
+    if not motion_enabled(cfg):
+        return []
+    return [int(k) for k in cfg.input.get("motion_lags", [1])]
+
+
 def in_channels(cfg) -> int:
-    return 6 if motion_enabled(cfg) else 3
+    return 3 + 3 * len(motion_lags(cfg))
 
 
-def assemble_input(rgb01, mean, std, motion):
-    """[3,L,H,W] float 0-1 -> [3 or 6, L,H,W] normalised model input."""
+def assemble_input(rgb01, mean, std, lags):
+    """[3,L,H,W] float 0-1 -> [3 + 3*len(lags), L,H,W] normalised model input."""
     norm = (rgb01 - mean) / std
-    if not motion:
+    if not lags:
         return norm
-    diff = torch.zeros_like(rgb01)
-    diff[:, 1:] = (rgb01[:, 1:] - rgb01[:, :-1]) / MOTION_SCALE   # causal: diff[0]=0
-    return torch.cat([norm, diff], dim=0)
+    chans = [norm]
+    for k in lags:
+        diff = torch.zeros_like(rgb01)
+        diff[:, k:] = (rgb01[:, k:] - rgb01[:, :-k]) / MOTION_SCALE   # causal: diff[<k]=0
+        chans.append(diff)
+    return torch.cat(chans, dim=0)
 
 
 # ----------------------------------------------------------------------
@@ -146,7 +158,7 @@ class WindowDataset(Dataset):
         self.crop = cfg.input.crop_size
         self.mean = torch.tensor(cfg.input.mean).view(3, 1, 1, 1)
         self.std = torch.tensor(cfg.input.std).view(3, 1, 1, 1)
-        self.motion = motion_enabled(cfg)
+        self.lags = motion_lags(cfg)
         self.rng = np.random.default_rng(cfg.train.seed + (0 if train else 1))
         self._cache = {}
 
@@ -201,7 +213,7 @@ class WindowDataset(Dataset):
         clip = self._spatial(clip)
         x = torch.from_numpy(clip).float().div_(255.0).permute(3, 0, 1, 2).contiguous()
         x = self._color_jitter(x)
-        x = assemble_input(x, self.mean, self.std, self.motion)
+        x = assemble_input(x, self.mean, self.std, self.lags)
         y = torch.tensor(float(row["label"]))
         return x, y, row["id"]
 
@@ -216,13 +228,13 @@ def strip_to_windows_tensor(meta_row, cfg):
     s0 = float(meta_row["strip_start_time"]); fps = float(meta_row["target_fps"])
     mean = torch.tensor(cfg.input.mean).view(3, 1, 1, 1)
     std = torch.tensor(cfg.input.std).view(3, 1, 1, 1)
-    motion = motion_enabled(cfg)
+    lags = motion_lags(cfg)
     S = strip.shape[1]; top = (S - c) // 2
     xs, ets = [], []
     for st in range(0, N - L + 1, int(cfg.window.stride)):
         clip = np.asarray(strip[st:st + L, top:top + c, top:top + c, :]).astype(np.float32) / 255.0
         rgb01 = torch.from_numpy(clip).permute(3, 0, 1, 2).contiguous()
-        xs.append(assemble_input(rgb01, mean, std, motion))
+        xs.append(assemble_input(rgb01, mean, std, lags))
         ets.append(window_end_time(st, L, s0, fps))
     x = torch.stack(xs).float()
     return x, np.array(ets)

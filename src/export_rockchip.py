@@ -125,12 +125,13 @@ def main():
     assert diff < 1e-3, "Rockchip split parity check failed!"
     print("parity OK")
 
-    from src.dataset import MOTION_SCALE, motion_enabled
+    from src.dataset import MOTION_SCALE, motion_enabled, motion_lags
     motion = motion_enabled(cfg)
     meta = {
         "frame_shape": [1, Cin, S, S],
         "in_channels": Cin,
         "motion": motion,
+        "motion_lags": motion_lags(cfg),
         "motion_scale": MOTION_SCALE,
         "feat_dim": C,
         "window_frames": T,

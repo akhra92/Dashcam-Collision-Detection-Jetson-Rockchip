@@ -55,9 +55,11 @@ def main():
     consec = meta["consec"]
     stride = meta.get("stride", 3)
     motion = meta.get("motion", False)
+    lags = meta.get("motion_lags", []) if motion else []
     mean = np.array(meta["mean"], np.float32).reshape(3, 1, 1)
     std = np.array(meta["std"], np.float32).reshape(3, 1, 1)
     mscale = meta.get("motion_scale", 0.5)
+    max_lag = max(lags) if lags else 0
 
     # NPU backbone
     from rknnlite.api import RKNNLite
@@ -75,7 +77,7 @@ def main():
     step = max(1, int(round(src_fps / tgt_fps)))
 
     feat_buf = deque(maxlen=L)
-    prev_rgb01 = None                                        # for motion diff
+    rgb_hist = deque(maxlen=max_lag + 1)                     # recent frames for motion diffs
     curve, run, fired_time = [], 0, None
     fcount, scount, bb_ms, head_ms = 0, 0, [], []
     while True:
@@ -84,13 +86,15 @@ def main():
             break
         if fcount % step == 0:
             frame = preprocess_frame(fr, S)                  # [S,S,3] uint8 RGB
-            if motion:
-                # build the 6ch normalised input on CPU (RKNN passes it through)
+            if lags:
+                # build the (3+3*len(lags))ch normalised input on CPU (RKNN passes through)
                 rgb01 = frame.astype(np.float32).transpose(2, 0, 1) / 255.0   # [3,S,S]
-                diff = (rgb01 - prev_rgb01) / mscale if prev_rgb01 is not None \
-                    else np.zeros_like(rgb01)
-                prev_rgb01 = rgb01
-                inp = np.concatenate([(rgb01 - mean) / std, diff], 0)[None].astype(np.float32)
+                rgb_hist.append(rgb01)
+                chans = [(rgb01 - mean) / std]
+                for k in lags:
+                    prev = rgb_hist[-1 - k] if len(rgb_hist) > k else rgb01     # zero diff early
+                    chans.append((rgb01 - prev) / mscale)
+                inp = np.concatenate(chans, 0)[None].astype(np.float32)
             else:
                 inp = frame[None]                            # raw NHWC; RKNN normalises
             t0 = time.time()

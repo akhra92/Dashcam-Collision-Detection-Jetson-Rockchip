@@ -43,28 +43,32 @@ def build_calibration(strips_dir, out_dir, S, n_imgs, meta, seed=0):
     rng = np.random.default_rng(seed)
     listing = os.path.join(out_dir, "dataset.txt")
     motion = meta.get("motion", False)
+    lags = meta.get("motion_lags", []) if motion else []
     mean = np.array(meta["mean"], np.float32).reshape(3, 1, 1)
     std = np.array(meta["std"], np.float32).reshape(3, 1, 1)
     scale = meta.get("motion_scale", 0.5)
+    max_lag = max(lags) if lags else 0
     written = 0
     with open(listing, "w") as f:
         while written < n_imgs:
             arr = np.load(rng.choice(files), mmap_mode="r")     # [N,Sx,Sx,3] uint8 RGB
-            if not motion:
+            if not lags:
                 fr = _crop(np.asarray(arr[int(rng.integers(0, arr.shape[0]))]), S)
                 p = os.path.abspath(os.path.join(out_dir, f"calib_{written:05d}.png"))
                 cv2.imwrite(p, cv2.cvtColor(fr, cv2.COLOR_RGB2BGR))
             else:
-                j = int(rng.integers(1, arr.shape[0]))          # need a previous frame
-                cur = _crop(np.asarray(arr[j]), S).astype(np.float32) / 255.0
-                prev = _crop(np.asarray(arr[j - 1]), S).astype(np.float32) / 255.0
-                cur = cur.transpose(2, 0, 1); prev = prev.transpose(2, 0, 1)  # [3,S,S]
-                six = np.concatenate([(cur - mean) / std, (cur - prev) / scale], 0)
+                j = int(rng.integers(max_lag, arr.shape[0]))    # room for the largest lag
+                cur = _crop(np.asarray(arr[j]), S).astype(np.float32).transpose(2, 0, 1) / 255.0
+                chans = [(cur - mean) / std]
+                for k in lags:
+                    prev = _crop(np.asarray(arr[j - k]), S).astype(np.float32).transpose(2, 0, 1) / 255.0
+                    chans.append((cur - prev) / scale)
                 p = os.path.abspath(os.path.join(out_dir, f"calib_{written:05d}.npy"))
-                np.save(p, six.astype(np.float32))
+                np.save(p, np.concatenate(chans, 0).astype(np.float32))
             f.write(p + "\n")
             written += 1
-    print(f"calibration: {written} samples ({'6ch npy' if motion else 'RGB png'}) -> {listing}")
+    kind = f"{3 + 3 * len(lags)}ch npy (lags={lags})" if lags else "RGB png"
+    print(f"calibration: {written} samples ({kind}) -> {listing}")
     return listing
 
 

@@ -228,8 +228,9 @@ class AccidentNet(nn.Module):
 
 def build_model(cfg) -> AccidentNet:
     m = cfg.model
-    in_chans = 6 if bool(cfg.input.get("motion", False)) else 3
+    motion = bool(cfg.input.get("motion", False))
+    n_lags = len(cfg.input.get("motion_lags", [1])) if motion else 0
     temporal = {"head": m.get("temporal_head", "tconv"),
                 "feat_dim": int(m.get("feat_dim", 256)),
-                "in_chans": in_chans}
+                "in_chans": 3 + 3 * n_lags}
     return AccidentNet(m.arch, m.pretrained, m.dropout, temporal=temporal)

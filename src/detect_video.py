@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 from src.config import load_config
-from src.dataset import assemble_input, motion_enabled
+from src.dataset import assemble_input, motion_lags
 from src.model import build_model
 
 
@@ -60,7 +60,7 @@ def main():
     stride = cfg.window.stride
     mean = torch.tensor(cfg.input.mean).view(3, 1, 1, 1)
     std = torch.tensor(cfg.input.std).view(3, 1, 1, 1)
-    motion = motion_enabled(cfg)
+    lags = motion_lags(cfg)
 
     cap = cv2.VideoCapture(args.video)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -79,7 +79,7 @@ def main():
             if len(buf) == L and scount % stride == 0:
                 rgb01 = torch.from_numpy(np.stack(buf)).float().div_(255.0) \
                     .permute(3, 0, 1, 2).contiguous()
-                x = assemble_input(rgb01, mean, std, motion).unsqueeze(0).to(device)
+                x = assemble_input(rgb01, mean, std, lags).unsqueeze(0).to(device)
                 prob = torch.sigmoid(model(x)).item()
                 t = fcount / src_fps
                 curve.append((t, prob))
