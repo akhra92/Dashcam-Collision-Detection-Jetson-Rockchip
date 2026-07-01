@@ -1,17 +1,15 @@
 # Dashcam Collision Detection — Edge (Jetson + Rockchip)
 
-Real-time **temporal** accident detection on dashcam video — it detects ***when*** a
-collision happens, not just whether a clip contains one. A causal 1-second window
-slides across the stream to produce a `P(accident)` curve; a detection fires when the
-curve stays high. Trained on the **Nexar Collision Prediction** dataset and deployed to
-two edge targets: **PyTorch → ONNX → TensorRT (Jetson Orin)** and **→ RKNN (Rockchip
-RK3588)**.
+Temporal accident detection on dashcam video: a causal 1-second window slides across
+the stream to produce a `P(accident)` curve, and a detection fires when the curve stays
+above threshold — the model reports ***when*** a collision happens, not just whether a
+clip contains one. Trained on the **Nexar Collision Prediction** dataset; deployed as
+**PyTorch → ONNX → TensorRT (Jetson Orin)** and **→ RKNN (Rockchip RK3588)**.
 
 ![Dashcam collision detection demo](assets/demo.gif)
 
-*Held-out clip (left) and the live `P(accident)` score (right): flat during normal
-driving, spiking the instant the collision unfolds (~19.1 s) and firing within ~0.1 s
-of the labelled time. Reproduce: `python -m tools.demo_gif make --id 00168`.*
+*Held-out clip: the score stays flat during normal driving, spikes at the collision
+(~19.1 s), and fires within ~0.1 s of the labelled time.*
 
 ## Models (Hugging Face Hub)
 
@@ -33,22 +31,19 @@ onnx = hf_hub_download("akhra92/dashcam-collision-jetson-r2plus1d18", "model.onn
 ## Live demo
 
 [**dashcam-collision-detection-jetson-rockchip.streamlit.app**](https://dashcam-collision-detection-jetson-rockchip.streamlit.app/)
-— upload a clip (or try the bundled sample) and watch the curve + detected time. Runs
-the R(2+1)D model on CPU via ONNXRuntime. Locally: `pip install -r requirements.txt &&
-streamlit run app.py`.
+— upload a clip (or use the bundled sample); runs the R(2+1)D model on CPU via
+ONNXRuntime. Locally: `pip install -r requirements.txt && streamlit run app.py`.
 
 ---
 
 ## How it works
 
 The model classifies a **1-second causal window** (16 frames @ 16 fps, ending "now") as
-accident/normal. Sliding it over a video gives a probability curve; a detection fires
-after `consec=3` consecutive windows above threshold — the exact streaming computation
-an edge device runs on a live camera. A training **sample is a window, not a video**.
-
-It is **temporal, not scene-level**: negatives include the normal-driving portions of
-accident videos, so the model learns the *event*, not the *scene*. For a window with
-end-time `t` in an accident video with event `e`:
+accident/normal — a training **sample is a window, not a video**. Sliding the window
+over a stream gives the probability curve; a detection fires after `consec=3`
+consecutive windows above threshold, the same computation an edge device runs live.
+Negatives include the normal-driving portions of accident videos, so the model learns
+the *event*, not the *scene*. For a window ending at `t` in a video with event `e`:
 
 | window end-time `t` | label |
 |---|---|
@@ -56,14 +51,9 @@ end-time `t` in an accident video with event `e`:
 | `e + 0.5s < t ≤ e + 2.5s` | ignored (ambiguous aftermath) |
 | otherwise (and all non-accident video) | **negative** |
 
-A detection is **correct** if it fires within **±1.0 s** of `time_of_event`.
-
-```
-MP4 (~40s) ─[preprocess]→ uint8 strip ─[window]→ [3,16,112,112] ─[model]→ logit
-         → sigmoid → P(accident) curve → detect() → "ACCIDENT at t=19.3s"
-```
-Split is stratified **at the video level** (85/15) so no clip straddles train/val. The
-Kaggle `dataset/test/` clips are unlabeled — all metrics use the held-out 15 %.
+A detection is **correct** if it fires within **±1.0 s** of `time_of_event`. The split
+is stratified **at the video level** (85/15); the Kaggle `dataset/test/` clips are
+unlabeled, so all metrics use the held-out 15 %.
 
 ---
 
@@ -89,23 +79,19 @@ Held-out **225-video** split, scored by streaming over the **full ~40 s videos**
 | resnet18 (RGB only) | 18 % @ 12 % | 0.34 s | RGB (3 ch) |
 | mnv3s (RGB only) | 22 % @ 14 % | 0.36 s | RGB (3 ch) |
 
-The RK3588 models trail the 3D models (~36 % vs ~63 %): a per-frame 2D CNN sees
-*appearance* but not *motion*. Feeding **temporal-difference channels** (`motion_lags`)
-was the decisive lever — multi-scale diffs **doubled** detection over RGB-only
-(18 % → 36 %). Motion modelling, not backbone size, is the bottleneck; the residual gap
-is the cost of dropping 3D convs to fit the NPU.
+Key findings:
 
-**Engineering notes** (baked into the configs):
-- **Full-timeline hard negatives** (`extract_negatives.py`) — without them the model
-  false-alarms on long streams.
-- **Select the checkpoint by val AP including those negatives** (`monitor: val_ap`), not
-  near-event AUC.
-- **Hard-negative mining** (`mine_hard_negatives.py`) dropped VideoMAE's false-alarm
-  floor 23.9 % → 8.8 %.
-- Always judge with `eval_fullvideo` (full videos), never the optimistic strip eval.
+- A per-frame 2D CNN sees *appearance* but not *motion* — adding temporal-difference
+  channels **doubled** Rockchip detection (18 % → 36 %). The residual gap to the 3D
+  models (~36 % vs ~63 %) is the cost of dropping 3D convs to fit the NPU.
+- **Full-timeline hard negatives** (`extract_negatives.py`) and checkpoint selection by
+  **val AP over them** (`monitor: val_ap`) are required to keep false alarms low on
+  long streams; **hard-negative mining** dropped VideoMAE's false-alarm floor
+  23.9 % → 8.8 %.
+- Judge models with `eval_fullvideo` (full videos), never the optimistic strip eval.
 
-The tuned `detect_threshold` lives in `best.pt` and the ONNX `.meta.json`; raise it to
-trade detection for fewer false alarms.
+The tuned `detect_threshold` lives in `best.pt` and the exported `.meta.json`; raise it
+to trade detection for fewer false alarms.
 
 ---
 
@@ -120,14 +106,11 @@ One interface (`src/model.py`), single-logit output per window:
 | `videomae_base` / `_large` | ViT | 86 / 300 M | highest accuracy; `transformers==4.46.3` |
 | `mnv3s_temporal` / `mnv3l` / `resnet18_temporal` | 2D-CNN + temporal head | 1.6–12 M | **no 3D convs** → RK3588 NPU |
 
-The 2D-CNN family takes optional `input.motion: true` + `motion_lags: [1,2,4]`, feeding
-RGB **plus** temporal differences (3 + 3·n_lags channels) for multi-scale motion. Each
-diff references the current frame, so the backbone stays per-frame (one NPU call/frame).
-Head options: `tconv` / `gru` / `tpool`.
-
-**Why two models:** the RK3588 NPU lacks 3D convolutions, so it runs a 2D-CNN-per-frame
-+ temporal head instead of the Jetson's 3D-CNN/ViT. The detection *framing* is identical
-— only the per-window classifier and export target (TensorRT vs RKNN) differ.
+The 2D-CNN family exists because the RK3588 NPU lacks 3D convolutions: the backbone
+runs per frame on the NPU (INT8) and a tiny temporal head (`tconv` / `gru` / `tpool`)
+aggregates on the CPU. With `input.motion: true` + `motion_lags: [1,2,4]` it takes RGB
+**plus** temporal differences (3 + 3·n_lags channels); each diff references the current
+frame, so the backbone still runs once per frame.
 
 ---
 
@@ -169,7 +152,7 @@ python3 deploy/jetson/infer_trt.py --engine model_fp16.engine \
 ```
 
 **Rockchip RK3588 (RKNN)** — split deploy: 2D backbone on the NPU (INT8), temporal head
-on the CPU.
+on the CPU:
 ```bash
 python -m src.export_rockchip --config configs/rockchip_resnet18_motion3.yaml   # on the PC
 #   -> backbone.onnx [1,12,112,112] + temporal_head.onnx [1,T,C] + rockchip.meta.json

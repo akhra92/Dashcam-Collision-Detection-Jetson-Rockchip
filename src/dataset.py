@@ -213,15 +213,16 @@ class WindowDataset(Dataset):
         strip = self._strip(row["strip_path"])
         N = strip.shape[0]
         st = int(row["start_idx"])
-        if self.train and self.cfg.window.temporal_jitter > 0:
+        # pseudo-strips (manifest negatives, end_time=NaN) are concatenated
+        # independent clips: window k is exactly [k*L,(k+1)*L), so neither
+        # temporal jitter nor motion context may cross the clip boundary
+        pseudo = pd.isna(row["end_time"])
+        if self.train and not pseudo and self.cfg.window.temporal_jitter > 0:
             j = int(self.cfg.window.temporal_jitter)
             st = int(np.clip(st + self.rng.integers(-j, j + 1), 0, N - self.L))
         # real strips provide history frames before the window so the motion
-        # diffs match streaming deploy; pseudo-strips (manifest negatives,
-        # end_time=NaN) are concatenated independent clips -> no usable context
-        ctx = 0
-        if self.max_lag and not pd.isna(row["end_time"]):
-            ctx = min(self.max_lag, st)
+        # diffs match streaming deploy
+        ctx = min(self.max_lag, st) if (self.max_lag and not pseudo) else 0
         clip = np.asarray(strip[st - ctx:st + self.L])     # [ctx+L,S,S,3] uint8
         clip = self._spatial(clip)
         x = torch.from_numpy(clip).float().div_(255.0).permute(3, 0, 1, 2).contiguous()
