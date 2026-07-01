@@ -40,16 +40,22 @@ def in_channels(cfg) -> int:
     return 3 + 3 * len(motion_lags(cfg))
 
 
-def assemble_input(rgb01, mean, std, lags):
-    """[3,L,H,W] float 0-1 -> [3 + 3*len(lags), L,H,W] normalised model input."""
-    norm = (rgb01 - mean) / std
+def assemble_input(rgb01, mean, std, lags, ctx=0):
+    """[3,ctx+L,H,W] float 0-1 -> [3 + 3*len(lags), L,H,W] normalised model input.
+
+    The first `ctx` frames are history only: they feed the temporal diffs of the
+    window frames but are dropped from the output. This matches the streaming
+    deploy (infer_rknn.py), where each frame's diffs come from the frames before
+    it in the stream, regardless of window boundaries. A frame with sequence
+    index < k gets a zero diff — same as the deploy behaviour at stream start."""
+    norm = (rgb01[:, ctx:] - mean) / std
     if not lags:
         return norm
     chans = [norm]
     for k in lags:
         diff = torch.zeros_like(rgb01)
         diff[:, k:] = (rgb01[:, k:] - rgb01[:, :-k]) / MOTION_SCALE   # causal: diff[<k]=0
-        chans.append(diff)
+        chans.append(diff[:, ctx:])
     return torch.cat(chans, dim=0)
 
 
@@ -159,6 +165,7 @@ class WindowDataset(Dataset):
         self.mean = torch.tensor(cfg.input.mean).view(3, 1, 1, 1)
         self.std = torch.tensor(cfg.input.std).view(3, 1, 1, 1)
         self.lags = motion_lags(cfg)
+        self.max_lag = max(self.lags) if self.lags else 0
         self.rng = np.random.default_rng(cfg.train.seed + (0 if train else 1))
         self._cache = {}
 
@@ -209,11 +216,17 @@ class WindowDataset(Dataset):
         if self.train and self.cfg.window.temporal_jitter > 0:
             j = int(self.cfg.window.temporal_jitter)
             st = int(np.clip(st + self.rng.integers(-j, j + 1), 0, N - self.L))
-        clip = np.asarray(strip[st:st + self.L])           # [L,S,S,3] uint8
+        # real strips provide history frames before the window so the motion
+        # diffs match streaming deploy; pseudo-strips (manifest negatives,
+        # end_time=NaN) are concatenated independent clips -> no usable context
+        ctx = 0
+        if self.max_lag and not pd.isna(row["end_time"]):
+            ctx = min(self.max_lag, st)
+        clip = np.asarray(strip[st - ctx:st + self.L])     # [ctx+L,S,S,3] uint8
         clip = self._spatial(clip)
         x = torch.from_numpy(clip).float().div_(255.0).permute(3, 0, 1, 2).contiguous()
         x = self._color_jitter(x)
-        x = assemble_input(x, self.mean, self.std, self.lags)
+        x = assemble_input(x, self.mean, self.std, self.lags, ctx=ctx)
         y = torch.tensor(float(row["label"]))
         return x, y, row["id"]
 
@@ -229,12 +242,14 @@ def strip_to_windows_tensor(meta_row, cfg):
     mean = torch.tensor(cfg.input.mean).view(3, 1, 1, 1)
     std = torch.tensor(cfg.input.std).view(3, 1, 1, 1)
     lags = motion_lags(cfg)
+    max_lag = max(lags) if lags else 0
     S = strip.shape[1]; top = (S - c) // 2
     xs, ets = [], []
     for st in range(0, N - L + 1, int(cfg.window.stride)):
-        clip = np.asarray(strip[st:st + L, top:top + c, top:top + c, :]).astype(np.float32) / 255.0
+        ctx = min(max_lag, st)
+        clip = np.asarray(strip[st - ctx:st + L, top:top + c, top:top + c, :]).astype(np.float32) / 255.0
         rgb01 = torch.from_numpy(clip).permute(3, 0, 1, 2).contiguous()
-        xs.append(assemble_input(rgb01, mean, std, lags))
+        xs.append(assemble_input(rgb01, mean, std, lags, ctx=ctx))
         ets.append(window_end_time(st, L, s0, fps))
     x = torch.stack(xs).float()
     return x, np.array(ets)

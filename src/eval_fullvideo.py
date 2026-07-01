@@ -23,12 +23,13 @@ from src.detect_video import preprocess_frame
 def stream_video(model, path, cfg, device, mean, std):
     from src.dataset import assemble_input, motion_lags
     lags = motion_lags(cfg)
+    max_lag = max(lags) if lags else 0
     L, S = cfg.input.num_frames, cfg.input.crop_size
     tgt_fps, stride = cfg.strip.target_fps, cfg.window.stride
     cap = cv2.VideoCapture(str(path))
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     step = max(1, int(round(src_fps / tgt_fps)))
-    buf = deque(maxlen=L)
+    buf = deque(maxlen=L + max_lag)      # extra history frames feed the motion diffs
     probs, times = [], []
     fcount, scount = 0, 0
     while True:
@@ -38,10 +39,11 @@ def stream_video(model, path, cfg, device, mean, std):
         if fcount % step == 0:
             buf.append(preprocess_frame(fr, S))
             scount += 1
-            if len(buf) == L and scount % stride == 0:
+            if len(buf) >= L and scount % stride == 0:
                 rgb01 = torch.from_numpy(np.stack(buf)).float().div_(255.0) \
                     .permute(3, 0, 1, 2).contiguous()
-                x = assemble_input(rgb01, mean, std, lags).unsqueeze(0).to(device)
+                x = assemble_input(rgb01, mean, std, lags,
+                                   ctx=len(buf) - L).unsqueeze(0).to(device)
                 with torch.autocast("cuda", enabled=device == "cuda"):
                     probs.append(torch.sigmoid(model(x)).item())
                 times.append(fcount / src_fps)

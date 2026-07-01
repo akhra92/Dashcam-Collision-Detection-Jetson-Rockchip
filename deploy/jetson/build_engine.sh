@@ -14,11 +14,19 @@ ONNX="${1:?path to .onnx required}"
 PRECISION="${2:-fp16}"
 ENGINE="${ONNX%.onnx}_${PRECISION}.engine"
 
-# Optimization profile for dynamic batch (input: [N,3,T,H,W]).
-# Adjust T/H/W to match your config (default 16x112x112).
-T=16; H=112; W=112
-MINB=1; OPTB=1; MAXB=4
+# Input T/H/W are read from the sidecar <model>.meta.json (input_shape =
+# [N,C,T,H,W]) so this works for any model — R(2+1)D @112 or VideoMAE @224.
+# Falls back to 16x112x112 if no meta is found. Override via env: T=.. H=.. W=..
+META="${ONNX%.onnx}.meta.json"
+if [[ -f "${META}" ]]; then
+  read T H W < <(python3 -c "import json;s=json.load(open('${META}'))['input_shape'];print(s[-3],s[-2],s[-1])")
+fi
+T="${T:-16}"; H="${H:-112}"; W="${W:-112}"
+# Batch 1 by default (streaming inference is batch-1). Override via env MAXB=..
+MINB="${MINB:-1}"; OPTB="${OPTB:-1}"; MAXB="${MAXB:-1}"
+WORKSPACE="${WORKSPACE:-4096}"          # MB; a ViT (VideoMAE) needs more than a CNN
 SHAPE="3x${T}x${H}x${W}"
+echo "building ${ENGINE}: input Nx${SHAPE} (batch ${MINB}/${OPTB}/${MAXB}), ws=${WORKSPACE}MB"
 
 COMMON=(
   --onnx="${ONNX}"
@@ -26,7 +34,7 @@ COMMON=(
   --minShapes=input:${MINB}x${SHAPE}
   --optShapes=input:${OPTB}x${SHAPE}
   --maxShapes=input:${MAXB}x${SHAPE}
-  --memPoolSize=workspace:2048
+  --memPoolSize=workspace:${WORKSPACE}
   --verbose
 )
 

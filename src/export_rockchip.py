@@ -137,7 +137,7 @@ def main():
         "window_frames": T,
         "stride": cfg.window.stride,
         "target_fps": cfg.strip.target_fps,
-        "detect_threshold": ckpt.get("tuned_threshold", cfg.detect.threshold),
+        "detect_threshold": ckpt.get("detect_threshold", cfg.detect.threshold),
         "consec": cfg.detect.consec,
         "tolerance_s": cfg.detect.tolerance_s,
         "mean": cfg.input.mean, "std": cfg.input.std,

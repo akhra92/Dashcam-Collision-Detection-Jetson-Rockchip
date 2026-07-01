@@ -61,12 +61,13 @@ def main():
     mean = torch.tensor(cfg.input.mean).view(3, 1, 1, 1)
     std = torch.tensor(cfg.input.std).view(3, 1, 1, 1)
     lags = motion_lags(cfg)
+    max_lag = max(lags) if lags else 0
 
     cap = cv2.VideoCapture(args.video)
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     step = max(1, int(round(src_fps / tgt_fps)))
 
-    buf = deque(maxlen=L)
+    buf = deque(maxlen=L + max_lag)      # extra history frames feed the motion diffs
     curve, run, fired = [], 0, None
     fcount, scount = 0, 0
     while True:
@@ -76,10 +77,11 @@ def main():
         if fcount % step == 0:
             buf.append(preprocess_frame(fr, S))
             scount += 1
-            if len(buf) == L and scount % stride == 0:
+            if len(buf) >= L and scount % stride == 0:
                 rgb01 = torch.from_numpy(np.stack(buf)).float().div_(255.0) \
                     .permute(3, 0, 1, 2).contiguous()
-                x = assemble_input(rgb01, mean, std, lags).unsqueeze(0).to(device)
+                x = assemble_input(rgb01, mean, std, lags,
+                                   ctx=len(buf) - L).unsqueeze(0).to(device)
                 prob = torch.sigmoid(model(x)).item()
                 t = fcount / src_fps
                 curve.append((t, prob))
