@@ -81,7 +81,29 @@ On-device, the ONNX graph is compiled to a TensorRT engine (Jetson) or an
 """
 
 
-def build_rockchip_card(repo_id: str, meta: dict) -> str:
+def _results_block(results: dict | None) -> str:
+    """Render held-out results (from the run dir's eval JSONs) for the card."""
+    if not results:
+        return ""
+    lines = []
+    fv = results.get("fullvideo")
+    if fv and fv.get("best"):
+        b = fv["best"]
+        lines += ["\n## Results (held-out videos, full-video streaming eval)\n",
+                  "| metric | value |", "|---|---|",
+                  f"| detection rate | {b['detection_rate'] * 100:.1f} % |",
+                  f"| false-alarm rate | {b['false_alarm_rate'] * 100:.1f} % |",
+                  f"| mean localization error | {b['mean_loc_error']:.2f} s |",
+                  f"| operating threshold | {b['threshold']:.2f} |"]
+    st = results.get("strip", {})
+    if "window_level" in st:
+        w = st["window_level"]
+        lines.append(f"\nWindow-level ranking on validation windows (incl. full-timeline "
+                     f"negatives): AUC {w['auc']:.3f}, AP {w['ap']:.3f}.")
+    return "\n".join(lines) + "\n" if lines else ""
+
+
+def build_rockchip_card(repo_id: str, meta: dict, results: dict | None = None) -> str:
     """Model card for the Rockchip split export (backbone + temporal head)."""
     arch = meta.get("arch", "unknown")
     fs = meta.get("frame_shape", [1, 3, 112, 112])
@@ -118,7 +140,7 @@ Causal sliding-window crash detector for the **RK3588 NPU**. Because the NPU has
 
 - **Input:** {motion} ({fs[1]} channels), {T}-frame window
 - **Decision rule:** threshold `{thr}`, `{consec}` consecutive windows
-
+{_results_block(results)}
 ## Usage
 
 ```python
@@ -150,6 +172,10 @@ def push_rockchip(args, cfg):
         raise FileNotFoundError(f"missing {missing} in {out_dir} "
                                 f"(run src.export_rockchip first)")
     meta = json.loads((out_dir / "rockchip.meta.json").read_text())
+    results = {}
+    for key, name in (("strip", "temporal_eval.json"), ("fullvideo", "fullvideo_eval.json")):
+        if (out_dir / name).is_file():
+            results[key] = json.loads((out_dir / name).read_text())
 
     from huggingface_hub import HfApi
     api = HfApi(token=args.token)
@@ -161,7 +187,7 @@ def push_rockchip(args, cfg):
                         repo_id=args.repo_id, repo_type="model")
         print(f"uploaded {f}")
     if not args.no_card:
-        api.upload_file(path_or_fileobj=build_rockchip_card(args.repo_id, meta).encode(),
+        api.upload_file(path_or_fileobj=build_rockchip_card(args.repo_id, meta, results).encode(),
                         path_in_repo="README.md", repo_id=args.repo_id, repo_type="model")
         print("uploaded README.md (model card)")
     print(f"done -> https://huggingface.co/{args.repo_id}")

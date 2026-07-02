@@ -127,6 +127,12 @@ def main():
 
     from src.dataset import MOTION_SCALE, motion_enabled, motion_lags
     motion = motion_enabled(cfg)
+    # deployment threshold priority: full-video tuned > strip tuned > config
+    thr = ckpt.get("detect_threshold", cfg.detect.threshold)
+    fv_path = out_dir / "fullvideo_eval.json"
+    if fv_path.is_file():
+        thr = json.loads(fv_path.read_text())["best"]["threshold"]
+        print(f"using full-video tuned detect_threshold={thr}")
     meta = {
         "frame_shape": [1, Cin, S, S],
         "in_channels": Cin,
@@ -137,7 +143,7 @@ def main():
         "window_frames": T,
         "stride": cfg.window.stride,
         "target_fps": cfg.strip.target_fps,
-        "detect_threshold": ckpt.get("detect_threshold", cfg.detect.threshold),
+        "detect_threshold": thr,
         "consec": cfg.detect.consec,
         "tolerance_s": cfg.detect.tolerance_s,
         "mean": cfg.input.mean, "std": cfg.input.std,

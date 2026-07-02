@@ -108,7 +108,9 @@ def _load_manifest_negatives(cfg, video_ids, filename):
     nm = nm[nm["id"].isin(set(video_ids))].copy()
     nm["end_time"] = np.nan
     nm["event_time"] = np.nan
-    return nm[["id", "strip_path", "start_idx", "label", "end_time", "event_time"]]
+    if "ctx" not in nm.columns:           # older manifests store no context frames
+        nm["ctx"] = 0
+    return nm[["id", "strip_path", "start_idx", "label", "end_time", "event_time", "ctx"]]
 
 
 def _load_fulltime_negatives(cfg, video_ids):
@@ -214,15 +216,22 @@ class WindowDataset(Dataset):
         N = strip.shape[0]
         st = int(row["start_idx"])
         # pseudo-strips (manifest negatives, end_time=NaN) are concatenated
-        # independent clips: window k is exactly [k*L,(k+1)*L), so neither
-        # temporal jitter nor motion context may cross the clip boundary
+        # independent clips, so neither temporal jitter nor motion context may
+        # cross a clip boundary; mined clips may carry their own stored context
+        # frames (manifest `ctx` column)
         pseudo = pd.isna(row["end_time"])
         if self.train and not pseudo and self.cfg.window.temporal_jitter > 0:
             j = int(self.cfg.window.temporal_jitter)
             st = int(np.clip(st + self.rng.integers(-j, j + 1), 0, N - self.L))
-        # real strips provide history frames before the window so the motion
-        # diffs match streaming deploy
-        ctx = min(self.max_lag, st) if (self.max_lag and not pseudo) else 0
+        # context frames before the window give the motion diffs real history,
+        # matching the streaming deploy
+        if not self.max_lag:
+            ctx = 0
+        elif pseudo:
+            c = row.get("ctx", np.nan)
+            ctx = 0 if pd.isna(c) else int(c)
+        else:
+            ctx = min(self.max_lag, st)
         clip = np.asarray(strip[st - ctx:st + self.L])     # [ctx+L,S,S,3] uint8
         clip = self._spatial(clip)
         x = torch.from_numpy(clip).float().div_(255.0).permute(3, 0, 1, 2).contiguous()

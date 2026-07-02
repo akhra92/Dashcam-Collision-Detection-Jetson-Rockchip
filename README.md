@@ -74,24 +74,29 @@ Held-out **225-video** split, scored by streaming over the **full ~40 s videos**
 
 | Model | Detection @ low-FAR | Loc. err | Input |
 |---|---|---|---|
-| **resnet18 + motion ×3** ⭐ | **35.7 %** @ 11.5 % | 0.30 s | RGB + diffs @ lags 1,2,4 (12 ch) |
-| resnet18 + motion (1 lag) | 30 % @ 13 % | 0.38 s | RGB + diff (6 ch) |
+| **resnet18 + motion ×3** ⭐ | **34.8 %** @ 15.0 % | 0.34 s | RGB + diffs @ lags 1,2,4 (12 ch) |
+| resnet18 + motion (1 lag)¹ | 30 % @ 13 % | 0.38 s | RGB + diff (6 ch) |
 | resnet18 (RGB only) | 18 % @ 12 % | 0.34 s | RGB (3 ch) |
 | mnv3s (RGB only) | 22 % @ 14 % | 0.36 s | RGB (3 ch) |
+
+¹ Motion models are scored with the eval that matches the on-device motion-diff
+computation (real frame history per window). The 1-lag row predates that fix and is
+slightly optimistic; RGB-only rows are unaffected.
 
 Key findings:
 
 - A per-frame 2D CNN sees *appearance* but not *motion* — adding temporal-difference
-  channels **doubled** Rockchip detection (18 % → 36 %). The residual gap to the 3D
-  models (~36 % vs ~63 %) is the cost of dropping 3D convs to fit the NPU.
+  channels roughly **doubled** Rockchip detection (18 % → ~35 %). The residual gap to
+  the 3D models (~35 % vs ~63 %) is the cost of dropping 3D convs to fit the NPU.
 - **Full-timeline hard negatives** (`extract_negatives.py`) and checkpoint selection by
   **val AP over them** (`monitor: val_ap`) are required to keep false alarms low on
   long streams; **hard-negative mining** dropped VideoMAE's false-alarm floor
   23.9 % → 8.8 %.
 - Judge models with `eval_fullvideo` (full videos), never the optimistic strip eval.
 
-The tuned `detect_threshold` lives in `best.pt` and the exported `.meta.json`; raise it
-to trade detection for fewer false alarms.
+The exported `.meta.json` ships the `detect_threshold` tuned on full-video streaming
+(`fullvideo_eval.json`) when available — strip-tuned thresholds false-alarm far more on
+long streams. Raise it to trade detection for fewer false alarms.
 
 ---
 
@@ -184,5 +189,6 @@ artifacts/, dataset/   data, checkpoints, ONNX (gitignored)
   full-video evaluation, parity-checked ONNX export, all 4 models published to HF.
 - ⏳ **Jetson:** build + benchmark the TensorRT engine on a physical Orin.
 - ⏳ **Rockchip:** benchmark the INT8 `backbone.rknn` on a physical RK3588.
-- **Accuracy headroom:** Rockchip ~36 % vs Jetson ~63 % detection — next levers are
-  optical-flow/two-stream input or an NPU-friendly (2+1)D temporal block.
+- **Accuracy headroom:** Rockchip ~35 % vs Jetson ~63 % detection — in progress:
+  motion-aware hard-negative mining against the ~15 % false-alarm floor; further levers
+  are optical-flow/two-stream input or an NPU-friendly (2+1)D temporal block.

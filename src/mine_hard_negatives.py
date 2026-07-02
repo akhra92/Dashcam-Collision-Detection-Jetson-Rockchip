@@ -11,13 +11,18 @@ A window is negative-eligible if:
   * the video is an accident video but the window's end time is well OUTSIDE the
     event region [event - pos_pre - guard, event + ignore_post + guard].
 
+Motion configs are supported: windows are scored with real-history temporal
+diffs (exactly like the streaming deploy), and each saved clip keeps `max_lag`
+context frames in front of its L window frames so re-training also sees real
+diffs (the manifest's `ctx` column tells the dataset where the window starts).
+
 Usage:
     python -m src.mine_hard_negatives --config configs/jetson_videomae.yaml \
         --ckpt artifacts/runs/jetson_videomae_base/best.pt \
         --mine-threshold 0.85 --max-per-video 12
 Outputs (into the config's clips_dir):
-    hardneg/<id>.npy           concatenated mined clips [k*L, S, S, 3] uint8
-    hardneg_manifest.csv       id, strip_path, start_idx, label=0, prob
+    hardneg/<id>.npy           concatenated mined clips [k*(ctx+L), S, S, 3] uint8
+    hardneg_manifest.csv       id, strip_path, start_idx, ctx, label=0, prob
 """
 from __future__ import annotations
 import argparse
@@ -30,7 +35,7 @@ import torch
 from tqdm import tqdm
 
 from src.config import load_config
-from src.dataset import video_level_split
+from src.dataset import video_level_split, assemble_input, motion_lags
 from src.model import build_model
 from src.detect_video import preprocess_frame
 
@@ -38,8 +43,10 @@ from src.detect_video import preprocess_frame
 @torch.no_grad()
 def mine_video(model, path, cfg, device, mean, std, event_time,
                mine_thr, max_per_video, stride, guard=0.5):
-    """Return (clips[list of [L,S,S,3] uint8], probs[list]) for hard negatives."""
+    """Return (clips[list of [ctx+L,S,S,3] uint8], probs[list]) for hard negatives."""
     L, S = cfg.input.num_frames, cfg.input.crop_size
+    lags = motion_lags(cfg)
+    max_lag = max(lags) if lags else 0
     tgt_fps = cfg.strip.target_fps
     cap = cv2.VideoCapture(str(path))
     src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -61,22 +68,23 @@ def mine_video(model, path, cfg, device, mean, std, event_time,
     times = np.array(times)
     N = arr.shape[0]
 
-    # window end time = time of last frame in window
-    starts = list(range(0, N - L + 1, stride))
+    # window end time = time of last frame in window; start at max_lag so every
+    # window has full motion context (and every stored clip the same length)
+    starts = list(range(max_lag, N - L + 1, stride))
     excl = None
     if event_time is not None and not (isinstance(event_time, float) and np.isnan(event_time)):
         excl = (event_time - cfg.window.pos_pre - guard,
                 event_time + cfg.window.ignore_post + guard)
 
     keep_starts, probs = [], []
-    batch_idx = []
-    mean_t = torch.tensor(mean).view(1, 3, 1, 1, 1)
-    std_t = torch.tensor(std).view(1, 3, 1, 1, 1)
     for bstart in range(0, len(starts), 16):
         chunk = starts[bstart:bstart + 16]
-        clips = np.stack([arr[s:s + L] for s in chunk]).astype(np.float32) / 255.0
-        x = torch.from_numpy(clips).permute(0, 4, 1, 2, 3)   # [b,3,L,S,S]
-        x = ((x - mean_t) / std_t).to(device)
+        xs = []
+        for s in chunk:
+            seq = torch.from_numpy(arr[s - max_lag:s + L].astype(np.float32) / 255.0) \
+                .permute(3, 0, 1, 2)                         # [3,ctx+L,S,S]
+            xs.append(assemble_input(seq, mean, std, lags, ctx=max_lag))
+        x = torch.stack(xs).to(device)
         with torch.autocast("cuda", enabled=device == "cuda"):
             p = torch.sigmoid(model(x)).float().cpu().numpy()
         for s, pr in zip(chunk, p):
@@ -88,7 +96,7 @@ def mine_video(model, path, cfg, device, mean, std, event_time,
     if not keep_starts:
         return [], []
     order = np.argsort(probs)[::-1][:max_per_video]          # hardest first
-    clips = [arr[keep_starts[i]:keep_starts[i] + L] for i in order]
+    clips = [arr[keep_starts[i] - max_lag:keep_starts[i] + L] for i in order]
     probs = [probs[i] for i in order]
     return clips, probs
 
@@ -109,7 +117,8 @@ def main():
                       map_location=device, weights_only=False)
     model = build_model(cfg).to(device).eval()
     model.load_state_dict(ckpt["model"])
-    mean, std = cfg.input.mean, cfg.input.std
+    mean = torch.tensor(cfg.input.mean).view(3, 1, 1, 1)
+    std = torch.tensor(cfg.input.std).view(3, 1, 1, 1)
 
     tr_meta, _ = video_level_split(cfg)                      # TRAIN videos only
     src = Path(cfg.paths.dataset_root) / "train"
@@ -117,6 +126,9 @@ def main():
     hard_dir.mkdir(parents=True, exist_ok=True)
 
     L = cfg.input.num_frames
+    lags = motion_lags(cfg)
+    max_lag = max(lags) if lags else 0
+    seg = L + max_lag                     # stored clip = ctx frames + window frames
     manifest, total = [], 0
     for _, r in tqdm(tr_meta.iterrows(), total=len(tr_meta), desc="mine"):
         clips, probs = mine_video(
@@ -130,7 +142,8 @@ def main():
         np.save(p, arr)
         for k, pr in enumerate(probs):
             manifest.append({"id": r["id"], "strip_path": str(p),
-                             "start_idx": k * L, "label": 0, "prob": round(pr, 4)})
+                             "start_idx": k * seg + max_lag, "ctx": max_lag,
+                             "label": 0, "prob": round(pr, 4)})
         total += len(clips)
 
     man = pd.DataFrame(manifest)

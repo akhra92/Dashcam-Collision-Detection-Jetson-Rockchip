@@ -5,6 +5,7 @@ video, so the false-alarm rate reflects real deployment on long streams.
 """
 from __future__ import annotations
 import argparse
+import json
 from collections import deque
 from pathlib import Path
 
@@ -93,7 +94,7 @@ def main():
             print(f"  {k+1}/{len(va_meta)} videos streamed")
 
     print("\nthr   det_rate  false_alarm  loc_err  lead")
-    best = None
+    sweep, best = [], None
     for thr in np.linspace(0.5, 0.97, 24):
         pos_t = pos_h = neg_t = neg_f = 0
         errs, leads = [], []
@@ -109,10 +110,23 @@ def main():
         le = np.mean(errs) if errs else float("nan")
         ld = np.mean(leads) if leads else float("nan")
         print(f"{thr:.2f}   {dr:.3f}     {far:.3f}       {le:.3f}    {ld:+.3f}")
-        if best is None or (dr - far) > best[1]:
-            best = (thr, dr - far, dr, far, le, ld)
-    print(f"\nbest thr={best[0]:.2f}  det_rate={best[2]:.3f}  false_alarm={best[3]:.3f}  "
-          f"loc_err={best[4]:.3f}s  lead={best[5]:+.3f}s")
+        row = {"threshold": round(float(thr), 4),
+               "detection_rate": round(dr, 4), "false_alarm_rate": round(far, 4),
+               "mean_loc_error": None if np.isnan(le) else round(float(le), 4),
+               "mean_lead_time": None if np.isnan(ld) else round(float(ld), 4)}
+        sweep.append(row)
+        if best is None or (dr - far) > best["detection_rate"] - best["false_alarm_rate"]:
+            best = row
+    print(f"\nbest thr={best['threshold']:.2f}  det_rate={best['detection_rate']:.3f}  "
+          f"false_alarm={best['false_alarm_rate']:.3f}  "
+          f"loc_err={best['mean_loc_error']}s  lead={best['mean_lead_time']}s")
+
+    # persist for export_rockchip (deployment threshold) and the HF model card
+    report = {"best": best, "sweep": sweep, "consec": consec, "tolerance_s": tol,
+              "n_videos": len(curves)}
+    with open(out_dir / "fullvideo_eval.json", "w") as f:
+        json.dump(report, f, indent=2)
+    print(f"saved -> {out_dir / 'fullvideo_eval.json'}")
 
 
 if __name__ == "__main__":
